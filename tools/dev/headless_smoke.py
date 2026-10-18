@@ -39,6 +39,27 @@ def run():
         ok = "PatracDockWidget" in docks
         return ok, "" if ok else "docks: %s" % docks
 
+    def reload_does_not_duplicate_ui():
+        # Unloading must remove the dock panel and toolbar; otherwise every reload adds another.
+        from qgis.PyQt.QtCore import QCoreApplication, QEvent
+        from qgis.PyQt.QtWidgets import QDockWidget, QToolBar
+        window = utils.iface.mainWindow()
+
+        def counts():
+            QCoreApplication.sendPostedEvents(None, QEvent.DeferredDelete)
+            docks = [d for d in window.findChildren(QDockWidget) if d.objectName() == "PatracDockWidget"]
+            bars = [t for t in window.findChildren(QToolBar) if t.objectName() == "Patrac Toolbar"]
+            return len(docks), len(bars)
+
+        before = counts()
+        utils.unloadPlugin("qgis_patrac")
+        after_unload = counts()
+        utils.loadPlugin("qgis_patrac")
+        utils.startPlugin("qgis_patrac")
+        after_reload = counts()
+        ok = before == (1, 1) and after_unload == (0, 0) and after_reload == (1, 1)
+        return ok, "(docks, toolbars) before=%s after_unload=%s after_reload=%s" % (before, after_unload, after_reload)
+
     profile = QgsApplication.qgisSettingsDirPath()
     config_path = os.path.join(profile, "patrac_settings", "config", "config.json")
 
@@ -70,16 +91,17 @@ def run():
     def debugpy_listen():
         import debugpy
         debugpy.configure(python=os.environ.get("QGIS_PY", ""))
-        host, port = debugpy.listen(("127.0.0.1", 5678))
+        host, port = debugpy.listen(("127.0.0.1", 0))  # any free port: a real QGIS debug session may hold 5678
         return True, "%s:%s" % (host, port)
 
     check("plugin loaded without exception", load)
     check("plugin started without exception", start)
     check("dock widget created and showWidget() runs", dock)
+    check("unload + reload leaves exactly one Patrac panel and toolbar", reload_does_not_duplicate_ui)
     check("config.json exists with data_path ending /patracdata/", config)
     check("~/patracdata/doc/index.html exists", doc)
     check("EPSG:4326 -> EPSG:5514 transform (Kosice)", transform)
-    check("debugpy.listen on 127.0.0.1:5678", debugpy_listen)
+    check("debugpy.listen on a free 127.0.0.1 port", debugpy_listen)
 
     print("SMOKE RESULT: %s" % ("ALL PASS" if all(results) else "FAILURES"), flush=True)
     # Quit without the "save project?" prompt (nothing was changed in the project).

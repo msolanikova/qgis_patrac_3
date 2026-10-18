@@ -402,7 +402,8 @@ class PatracPlugin(object):
         #             print("CAN NOT FIND QGIS TO RELOAD")
         self.iface.currentLayerChanged.disconnect(self.layerChanged)
         self.iface.removePluginMenu(QCoreApplication.translate("Patrac", "Patrac"), self.actionDock)
-        self.dockWidget.close()
+        self.iface.removeDockWidget(self.dockWidget)
+        self.dockWidget.deleteLater()
         del self.dockWidget
         del self.toolbar
 
