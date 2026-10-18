@@ -82,6 +82,13 @@ New module `main/analysis.py` with a dialog, reachable from the existing GPX imp
 - **Remaining probability**: for each sector, `p_remaining = p_prior × (1 − coverage × POD)` normalised across sectors, where `p_prior` is the existing ISRID-style percentage and `POD` is a configurable probability-of-detection (default 0.7). The model is simple and documented as an approximation. It is configurable so the user can tune it.
 - Tests: pure-Python functions (buffering, coverage ratio, speed and duration, probability update) are unit-tested without QGIS where possible, using small synthetic tracks and sectors.
 
+## Amendments found while planning sub-project 1
+
+- Install the Homebrew cask `qgis@ltr` (QGIS 3.44). The plain `qgis` cask is QGIS 4 / Qt6, and the plugin uses Qt5-only code.
+- The symlink is named `qgis_patrac` (not `qgis_patrac_3`), because the plugin looks up translations and `settings.db` under that name.
+- The plugin builds `<plugin dir>/../../../patrac_settings` in about 40 places. This breaks through a symlink, because the OS resolves `..` after following the link. All of them move to a new `patrac_paths.settings_dir()` in sub-project 1.
+- The default data folder (`~/patracdata`, override with `$PATRAC_DATA`) is pulled forward from sub-project 3 into sub-project 1. Without it, the current fallback is an empty string, and the plugin tries to create `doc/` in the process's working directory, which fails on macOS.
+
 ## Risks
 
 - OSM coverage and tagging quality in Košický kraj may produce odd sectors (for example large unmapped fields). Mitigation: review with the user and tune the rules and merge thresholds.
