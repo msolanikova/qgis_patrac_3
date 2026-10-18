@@ -24,7 +24,8 @@ A command-line tool that turns open data into the files Patrac reads for a regio
 | Sector size | Configurable `min/target/max` in hectares. Default 6 / 7 / 8 (user request). |
 | Typ codes | Keep the Czech ZABAGED-style codes (`LPSTROM`, `ORNAPU`, `AREZAS`, …). The plugin's styles and reports use them. |
 | Merge rule | Merge small faces only within the same plugin class (the 10 classes in `main/sectors.py:getReportItems`), then label the result by the type with the largest area. Thin slivers (< 5 ha, compactness < 0.1) and faces < 1 ha merge into any neighbour. |
-| Split rule | Areas above the maximum are cut into near-equal parts (balanced area, along the long axis), not repeatedly halved. |
+| Split rule | Areas above the maximum are cut into near-equal parts (balanced area, along the long axis), not repeatedly halved. The part count is the fewest that keep every part under 98% of the maximum. |
+| Window mode | `build --window LON,LAT --out DIR` builds only a 12 x 10 km area around a point (about 45 s) for quick inspection. |
 | Runtime | QGIS's Python (`$QGIS_PY`): shapely, geopandas, pyproj, numpy and GDAL are already there. Tests use `unittest`. |
 | Transformation | Pin EPSG:4836 for WGS84 to S-JTSK in the pipeline and test it against Košice. |
 | CRS | EPSG:5514 (S-JTSK), as in the plugin. |
@@ -57,8 +58,8 @@ docs/dev/sk-data.md    # how to run it, what each file means
 
 1. `download`: Geofabrik `slovakia-latest.osm.pbf` and the WorldCover tiles that cover the region (N48E018, N48E021 for `ke`) into `~/patracdata/source/`.
 2. `extract`: cut OSM to the region boundary plus an 800 m margin.
-3. `landcover`: OSM cover polygons from the rules file, minimum area 0.25 ha. WorldCover is sieved (regions under 0.25 ha removed), polygonized, and reduced to the part not covered by OSM polygons.
-4. `sectors`: lines (main roads, railways, rivers/streams/canals, edges of cover polygons, region margin) are noded and polygonized into faces. Each face gets the type of the smallest cover polygon containing a representative point. Unlabelled faces with at least 8% building coverage become `AREZAS`. Then merge, then split, then keep sectors whose representative point is inside the region boundary.
+3. `landcover`: OSM cover polygons from the rules file, minimum area 0.25 ha. WorldCover is sieved (regions under 0.5 ha removed) and polygonized. It is not cut against the OSM polygons (too slow at kraj scale): both layers contribute boundary lines, a face is typed by OSM first and WorldCover second, and the merge step folds the extra small faces back together.
+4. `sectors`: lines (main roads, railways, rivers/streams/canals, edges of cover polygons, region margin) are noded and polygonized into faces. Each face gets the type of the smallest cover polygon containing a representative point. Unlabelled faces with at least 8% building coverage become `AREZAS`. Then merge, then split, then absorb fragments smaller than 1 ha into the neighbour they share the longest border with, then keep sectors whose representative point is inside the region boundary.
 5. `layers`: `cesta` (highways), `lespru` (tracks and paths in forest), `vodtok` (waterways) in the region.
 6. `places`: municipality list as `x;y;code;name;okres_code;okres_name;KE` from OSM municipality boundaries and place nodes, coordinates in S-JTSK.
 7. `export`: write `~/patracdata/kraje/<key>/vektor/ZABAGED/{sectors,cesta,lespru,vodtok}.shp`, `lastsectorid.txt` (1000000, the plugin's own fallback), `kraje/<key>/metadata.json` (`"version": "2020-01-01"`, source versions) and `ATTRIBUTION.txt`. The directory name `ZABAGED` is kept so the plugin works unchanged; sub-project 3 may rename it.
@@ -68,8 +69,8 @@ docs/dev/sk-data.md    # how to run it, what each file means
 `validate` fails the run if any of these is false:
 
 - `sectors.shp` is EPSG:5514, has a string field `typ` whose values all appear in `classes.json`, and every geometry is a valid polygon.
-- Sector areas sum to the region area within 0.5%, and sectors do not overlap (total area equals the area of their union within 0.1%).
-- No sector above the configured maximum; the share of sectors inside `[min, max]` is reported.
+- Sector areas sum to the region area within 2% (the whole kraj was off by 0.08%), and sectors do not overlap by more than 1 m2.
+- No sector above the configured maximum plus 1 ha (absorbing a fragment can push a sector slightly over the maximum); the share inside `[min, max]`, the number over the maximum and the number under 1 ha are reported.
 - `lastsectorid.txt` holds an integer and `metadata.json` has the version the plugin expects.
 - The Košice test point transforms to S-JTSK within 1 m of the EPSG:4836 result.
 
