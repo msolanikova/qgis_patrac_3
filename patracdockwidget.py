@@ -26,6 +26,7 @@
 # The layer transparency is based on https://github.com/alexbruy/raster-transparency
 # ******************************************************************************
 
+from .patrac_paths import settings_dir
 from qgis.PyQt.QtWidgets import *
 from qgis.PyQt.QtCore import *
 from qgis.PyQt.QtGui import *
@@ -143,7 +144,7 @@ class PatracDockWidget(QDockWidget, Ui_PatracDockWidget, object):
         # QUICKFIX:
         # self.pluginPath = "/usr/share/qgis/python/plugins/qgis_patrac"
         self.pluginPath = path.dirname(__file__)
-        self.settingsPath = self.pluginPath + "/../../../patrac_settings"
+        self.settingsPath = settings_dir()
         self.config = {}
         self.readConfig()
         self.gpxsource = 1
@@ -438,7 +439,7 @@ class PatracDockWidget(QDockWidget, Ui_PatracDockWidget, object):
             self.horizontalSectorsAnalyzeTrackNumberOfPersonsContainer.setEnabled(False)
 
     def loadBuffers(self):
-        settingsPath = self.pluginPath + "/../../../patrac_settings"
+        settingsPath = settings_dir()
         self.buffers = []
         with open(settingsPath + "/grass/buffer.csv", "r") as fileInput:
             for row in csv.reader(fileInput, delimiter=';'):
@@ -978,7 +979,7 @@ class PatracDockWidget(QDockWidget, Ui_PatracDockWidget, object):
                                                                  QApplication.translate("Patrac", "Can not copy. You have copy it manually from the path" + ": ", None) + DATAPATH + '/sektory/gpx/all.gpx')
 
     def saveUnitsInformation(self):
-        settingsPath = self.pluginPath + "/../../../patrac_settings"
+        settingsPath = settings_dir()
         f = io.open(settingsPath + '/grass/units.txt.tmp', 'w', encoding='utf-8')
 
         with open(settingsPath + "/grass/units.txt", "r") as fileInput:
@@ -1016,8 +1017,8 @@ class PatracDockWidget(QDockWidget, Ui_PatracDockWidget, object):
             f.write(self.guideMaxTime.text())
             f.close()
 
-        if os.path.exists(self.pluginPath + "/../../../patrac_settings/grass"):
-            f = io.open(self.pluginPath + "/../../../patrac_settings/grass/" + 'maxtime.txt', 'w', encoding='utf-8')
+        if os.path.exists(settings_dir() + "/grass"):
+            f = io.open(settings_dir() + "/grass/" + 'maxtime.txt', 'w', encoding='utf-8')
             f.write(self.guideMaxTime.text())
             f.close()
 

@@ -25,6 +25,7 @@
 #
 #******************************************************************************
 
+from ..patrac_paths import settings_dir
 import os
 from qgis.PyQt import QtWidgets,QtCore, QtGui, uic
 from qgis.PyQt.QtGui import *
@@ -50,7 +51,7 @@ class Ui_Units(QtWidgets.QDialog, FORM_CLASS):
         self.parent = parent
         self.setupUi(self)
         self.pluginPath = pluginPath
-        self.settingsPath = pluginPath + "/../../../patrac_settings"
+        self.settingsPath = settings_dir()
         self.unitsLabels = [self.tr("Handler"), self.tr("Searcher"), self.tr("Rider"), self.tr("Car"), self.tr("Drone"), self.tr("Diver"), self.tr("Other")]
         self.fillLimitingTime()
 

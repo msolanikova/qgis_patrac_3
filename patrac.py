@@ -26,6 +26,7 @@
 #******************************************************************************
 
 
+from .patrac_paths import default_data_path
 import os, subprocess, sys, json
 from os import path
 from shutil import copy
@@ -91,7 +92,7 @@ class PatracPlugin(object):
         self.toolbar = self.iface.addToolBar("Patrac Toolbar")
         self.toolbar.setObjectName("Patrac Toolbar")
         self.pluginPath = path.dirname(__file__)
-        self.profilePath = self.pluginPath + "/../../../"
+        self.profilePath = os.path.join(QgsApplication.qgisSettingsDirPath(), "")
 
         # self.qgsVersion = str(QGis.QGIS_VERSION_INT)
 
@@ -186,15 +187,7 @@ class PatracPlugin(object):
         self.copyDocDir(self.config['data_path'], self.pluginPath, "js")
 
     def getPatracDataPath(self):
-        letters = "CDEFGHIJKLMNOPQRSTUVWXYZ"
-        drives = [letters[i] + ":/" for i in range(len(letters))]
-        for drive in drives:
-            if os.path.exists(drive + 'patracdata/'):
-                return drive + 'patracdata/'
-        if os.path.exists('/data/patracdata/'):
-            return '/data/patracdata/'
-
-        return ''
+        return default_data_path()
 
     def initGui(self):
         # if int(self.qgsVersion) < 10900:

@@ -1,5 +1,6 @@
 # -*- coding: utf-8 -*-
 
+from ..patrac_paths import settings_dir
 from qgis.PyQt import QtWidgets,QtCore, QtGui
 from qgis.PyQt.QtWidgets import *
 from qgis.PyQt.QtGui import *
@@ -842,7 +843,7 @@ class Ui_PatracDockWidget(object):
 
     def loadAvailableUnits(self):
         self.setAvailableUnitsItems()
-        settingsPath = self.pluginPath + "/../../../patrac_settings"
+        settingsPath = settings_dir()
         with open(settingsPath + "/grass/units.txt", "r") as fileInput:
             i=0
             for row in csv.reader(fileInput, delimiter=';'):

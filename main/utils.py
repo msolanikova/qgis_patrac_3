@@ -26,6 +26,7 @@
 # The sliders and layer transparency are based on https://github.com/alexbruy/raster-transparency
 # ******************************************************************************
 
+from ..patrac_paths import settings_dir
 import csv, io, math, subprocess, os, sys, uuid, json
 
 from qgis.core import *
@@ -262,7 +263,7 @@ class Utils(object):
 
     def getSettingsPath(self):
         pluginPath = self.getPluginPath()
-        return pluginPath + "/../../../patrac_settings"
+        return settings_dir()
 
     def setUTFToAllLayers(self):
         for layer in QgsProject.instance().mapLayers().values():

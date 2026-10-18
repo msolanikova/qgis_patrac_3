@@ -26,6 +26,7 @@
 # The sliders and layer transparency are based on https://github.com/alexbruy/raster-transparency
 # ******************************************************************************
 
+from ..patrac_paths import settings_dir
 import csv, io, math, subprocess, os, sys, uuid, filecmp
 
 from qgis.core import *
@@ -63,7 +64,7 @@ class Styles(object):
         locale = self.Utils.getLocale()
         layer = self.getSectorsLayer()
         if not layer is None:
-            settingsPath = self.pluginPath + "/../../../patrac_settings"
+            settingsPath = settings_dir()
             layer.loadNamedStyle(settingsPath + '/styles/sectors_' + name + '_' + locale + '.qml')
             f = io.open(settingsPath + '/styles/sektory_group.txt', 'w', encoding='utf-8')
             f.write(name)

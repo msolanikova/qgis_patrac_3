@@ -25,6 +25,7 @@
 #
 #******************************************************************************
 
+from ..patrac_paths import settings_dir
 import os
 import shutil
 import csv
@@ -320,7 +321,7 @@ class Ui_Result(QtWidgets.QDialog, FORM_CLASS):
         self.Utils.updateProjectInfo("lost_clothes", "")
 
     def getAccessKey(self):
-        with open(self.widget.getPluginPath() + "/../../../patrac_settings" + "/config/config.json") as json_file:
+        with open(settings_dir() + "/config/config.json") as json_file:
             config = json.load(json_file)
             accessKey = config['hsapikey']
         return accessKey

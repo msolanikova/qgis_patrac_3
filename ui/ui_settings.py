@@ -25,6 +25,7 @@
 #
 # ******************************************************************************
 
+from ..patrac_paths import settings_dir
 import os
 import sys
 import subprocess
@@ -64,7 +65,7 @@ class Ui_Settings(QtWidgets.QDialog, FORM_CLASS):
         self.widget = parent
         self.setupUi(self)
         self.pluginPath = pluginPath
-        self.settingsPath = pluginPath + "/../../../patrac_settings"
+        self.settingsPath = settings_dir()
         prjfi = QFileInfo(QgsProject.instance().fileName())
         DATAPATH = prjfi.absolutePath()
         self.config = None
@@ -478,7 +479,7 @@ class Ui_Settings(QtWidgets.QDialog, FORM_CLASS):
 
         currentPath = self.pluginPath
         if type == "user":
-            currentPath = self.pluginPath + "/../../../patrac_settings"
+            currentPath = settings_dir()
 
         # Reads CSV and populate the table
         with open(currentPath + fileName, "r") as fileInput:

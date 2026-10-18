@@ -1,3 +1,4 @@
+from ..patrac_paths import settings_dir
 from qgis.PyQt.QtCore import *
 from qgis.PyQt.QtGui import *
 
@@ -67,7 +68,7 @@ class PointMapTool(QgsMapTool):
       if not vector.isValid():
           QgsMessageLog.logMessage("Vrstvu " + path + " se nepodařilo načíst", "Patrac")
       else:
-          settingsPath = self.widget.pluginPath + "/../../../patrac_settings"
+          settingsPath = settings_dir()
           locale = self.Utils.getLocale()
           vector.loadNamedStyle(settingsPath + '/styles/result_' + locale + '.qml')
           QgsProject.instance().addMapLayer(vector)

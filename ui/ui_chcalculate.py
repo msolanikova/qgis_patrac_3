@@ -25,6 +25,7 @@
 #
 # ******************************************************************************
 
+from ..patrac_paths import settings_dir
 import os
 from qgis.PyQt import QtWidgets, QtGui, uic
 from qgis.core import *
@@ -51,7 +52,7 @@ class Ui_Chcalculate(QtWidgets.QDialog, FORM_CLASS):
         self.widget = parent
         self.setupUi(self)
         self.pluginPath = pluginPath
-        self.settingsPath = pluginPath + "/../../../patrac_settings"
+        self.settingsPath = settings_dir()
 
     def accept(self):
         self.plainTextEditResults.clear()

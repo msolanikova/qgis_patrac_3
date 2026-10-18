@@ -25,6 +25,7 @@
 #
 #******************************************************************************
 
+from ..patrac_paths import settings_dir
 import os
 from qgis.PyQt import QtWidgets,QtCore, QtGui, uic
 from qgis.PyQt.QtGui import *
@@ -52,7 +53,7 @@ class Ui_Handlers(QtWidgets.QDialog, FORM_CLASS):
         self.parent = parent
         self.setupUi(self)
         self.pluginPath = pluginPath
-        self.settingsPath = pluginPath + "/../../../patrac_settings"
+        self.settingsPath = settings_dir()
         self.Utils = Utils(self.parent)
 
         # Psovodi HS

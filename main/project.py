@@ -26,6 +26,7 @@
 # The sliders and layer transparency are based on https://github.com/alexbruy/raster-transparency
 # ******************************************************************************
 
+from ..patrac_paths import settings_dir
 import csv, io, math, urllib.request, urllib.error, urllib.parse, socket, subprocess, os, sys, uuid, json
 
 from qgis.core import *
@@ -168,7 +169,7 @@ class Project(object):
         self.iface = self.widget.plugin.iface
         self.canvas = self.widget.canvas
         self.serverUrl = self.widget.serverUrl
-        self.settingsPath = self.pluginPath + "/../../../patrac_settings"
+        self.settingsPath = settings_dir()
         with open(self.settingsPath + "/config/config.json") as c:
             self.config = json.load(c)
 

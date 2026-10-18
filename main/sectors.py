@@ -26,6 +26,7 @@
 # The sliders and layer transparency are based on https://github.com/alexbruy/raster-transparency
 # ******************************************************************************
 
+from ..patrac_paths import settings_dir
 import csv, io, math, subprocess, os, sys, uuid, webbrowser
 import collections
 import json
@@ -959,7 +960,7 @@ class Sectors(object):
         CUR_VPT = 0
 
         fileInput = None
-        settingsPath = PLUGIN_PATH + "/../../../patrac_settings"
+        settingsPath = settings_dir()
         if system == 'win':
             fileInput = open(settingsPath + "/grass/units.txt", encoding='utf-8', mode="r")
         elif system == 'linux':
@@ -1008,7 +1009,7 @@ class Sectors(object):
         f.write(u"</div>\n")
 
         fileInput = None
-        unitsTimesPath = PLUGIN_PATH + "/../../../patrac_settings/grass/units_times.csv"
+        unitsTimesPath = settings_dir() + "/grass/units_times.csv"
         if system == 'win':
             fileInput = open(unitsTimesPath, encoding='utf-8', mode="r")
         elif system == 'linux':
