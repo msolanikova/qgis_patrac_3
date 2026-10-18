@@ -1,6 +1,5 @@
 # Headless smoke test for the Patrac plugin inside the real QGIS binary.
-# Run (see docs/dev/macos-setup.md):
-#   QT_QPA_PLATFORM=offscreen "$QGIS_APP/Contents/MacOS/QGIS" --nologo --code tools/dev/headless_smoke.py
+# Run it with tools/dev/headless_smoke.sh (throw-away profile, 120 s limit). Running QGIS directly against your real profile may block on a keychain prompt.
 # Prints PASS/FAIL lines and quits QGIS. Exit code is not reliable with --code, so read the output.
 import json
 import os
