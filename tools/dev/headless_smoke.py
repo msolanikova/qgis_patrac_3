@@ -60,6 +60,13 @@ def run():
         ok = before == (1, 1) and after_unload == (0, 0) and after_reload == (1, 1)
         return ok, "(docks, toolbars) before=%s after_unload=%s after_reload=%s" % (before, after_unload, after_reload)
 
+    def non_patrac_project_is_ignored():
+        # Opening any ordinary QGIS project fires on_project_change; it must not raise.
+        plugin = utils.plugins["qgis_patrac"]
+        QgsProject.instance().clear()
+        plugin.dockWidget.on_project_change()
+        return True, ""
+
     profile = QgsApplication.qgisSettingsDirPath()
     config_path = os.path.join(profile, "patrac_settings", "config", "config.json")
 
@@ -98,6 +105,7 @@ def run():
     check("plugin started without exception", start)
     check("dock widget created and showWidget() runs", dock)
     check("unload + reload leaves exactly one Patrac panel and toolbar", reload_does_not_duplicate_ui)
+    check("project change on a non-Patrac project does not raise", non_patrac_project_is_ignored)
     check("config.json exists with data_path ending /patracdata/", config)
     check("~/patracdata/doc/index.html exists", doc)
     check("EPSG:4326 -> EPSG:5514 transform (Kosice)", transform)

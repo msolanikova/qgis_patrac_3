@@ -616,6 +616,9 @@ class PatracDockWidget(QDockWidget, Ui_PatracDockWidget, object):
     def setSectorsLayersSelectionEvent(self):
         QgsMessageLog.logMessage("Setting selection event", "Patrac")
         self.sectors_layer = self.Sectors.getSectorsLayer()
+        if self.sectors_layer is None:
+            # The opened project is not a Patrac search project
+            return
         self.sectors_layer.selectionChanged.connect(self.sectorsLayerSelectionChanged)
         self.plugin.splitByLineAction.setEnabled(False)
         self.plugin.addSplitByGridAction.setEnabled(False)
