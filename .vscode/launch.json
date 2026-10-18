@@ -1,0 +1,17 @@
+{
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "name": "Attach to QGIS (debugpy)",
+      "type": "debugpy",
+      "request": "attach",
+      "connect": { "host": "127.0.0.1", "port": 5678 },
+      "pathMappings": [
+        {
+          "localRoot": "${workspaceFolder}",
+          "remoteRoot": "${env:HOME}/Library/Application Support/QGIS/QGIS3/profiles/default/python/plugins/qgis_patrac"
+        }
+      ]
+    }
+  ]
+}

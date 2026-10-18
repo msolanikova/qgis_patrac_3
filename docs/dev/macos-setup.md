@@ -15,6 +15,7 @@
 The `qgis@ltr` cask (QGIS 3.44.x, Python 3.12, Qt 5.15) installs to `/Applications/QGIS-LTR.app` and has a different layout from what older docs describe. `tools/dev/qgis_env.sh` accounts for this:
 - QGIS's Python is `$QGIS_APP/Contents/MacOS/python` (a wrapper that sets `PYTHONHOME`), not `Contents/MacOS/bin/python3`.
 - The `qgis` and `processing` Python packages and the bundled plugins live under `$QGIS_APP/Contents/Resources/qgis/python`, so `PYTHONPATH` points there.
+- `qgis_env.sh` also exports `PROJ_LIB` / `PROJ_DATA` (`$QGIS_APP/Contents/Resources/qgis/proj`) and `GDAL_DATA` (`.../qgis/gdal`). Without them, QGIS's Python run from a terminal prints `PROJ: proj_create_from_database: Cannot find proj.db` and `QgsCoordinateTransform(EPSG:4326 -> EPSG:5514).isValid()` is False (this is a real failure, not a harmless warning) until `QgsApplication.initQgis()` runs. The QGIS app itself finds its PROJ data without these variables.
 - No `DYLD_FALLBACK_LIBRARY_PATH` was needed. `import processing` prints a harmless "Application path not initialized" line outside the GUI.
 
 ## Known import issues
@@ -27,3 +28,26 @@ Packages needed: none. `requests` and `networkx` are already available in QGIS 3
 ## Running the tests
 - Plain Python (path helper only): `python3 -m unittest discover -s tests -t . -v`
 - Inside QGIS's Python (includes the import smoke test): `source tools/dev/qgis_env.sh && QT_QPA_PLATFORM=offscreen "$QGIS_PY" -m unittest discover -s tests -t . -v`
+
+## Headless smoke test
+`tools/dev/headless_smoke.sh` starts the real QGIS binary offscreen (no window) with a throw-away profile in a temp folder, enables the plugin, runs `tools/dev/headless_smoke.py` and quits. It prints `SMOKE PASS/FAIL` lines and exits 0 only if all pass (120 s hard limit). The command it runs is essentially:
+```bash
+source tools/dev/qgis_env.sh
+QT_QPA_PLATFORM=offscreen "$QGIS_APP/Contents/MacOS/QGIS" --nologo --profiles-path <tmp> --code tools/dev/headless_smoke.py
+```
+The throw-away profile sets `[auth] use_password_helper=false`, because a fresh profile otherwise blocks forever on a macOS keychain prompt for the QGIS master password. Harmless offscreen noise: `createPlatformOpenGLContext`, `propagateSizeHints`, `insertAction: Attempt to insert null action`, and debugpy's "frozen modules" notice.
+
+## Debugging in VS Code
+1. Start QGIS with `tools/dev/run_qgis.sh` (this puts `QGIS_PY` in QGIS's environment).
+2. One-time: `"$QGIS_PY" -m pip install --user debugpy`.
+3. In QGIS: Plugins > Python Console > Show Editor, open `tools/dev/debug_attach.py`, Run.
+4. In VS Code: Run and Debug > "Attach to QGIS (debugpy)". Breakpoints in `*.py` files of this repo now work.
+For PyCharm / IntelliJ use a "Python Debug Server" configuration with `pydevd-pycharm` instead of `debugpy`.
+
+## What is checked in
+`config/` must exist (the plugin writes `config/lastprojectpath.txt` there). It is created by git via `config/.gitkeep`.
+
+## Manual verification checklist (do once)
+These need a human at the screen; the automated parts are covered by `tools/dev/headless_smoke.sh`.
+1. Dock panel: start `tools/dev/run_qgis.sh`, enable **Patrac** (Plugins > Manage and Install Plugins > Installed), then click the Patrac toolbar button / menu entry. Expected: the Patrac dock widget appears next to the Layers panel and the terminal shows no traceback.
+2. Breakpoint: open `patrac.py` in VS Code and set a breakpoint on the first line of `showWidget` (`grep -n "def showWidget" patrac.py`). In QGIS run `tools/dev/debug_attach.py` from the Python console editor (expected output: `debugpy listening on 127.0.0.1:5678 - attach from the IDE`). In VS Code run "Attach to QGIS (debugpy)". In QGIS click the Patrac toolbar button. Expected: VS Code stops on the breakpoint; Continue resumes and the dock appears. If it does not stop, check that the listening line was printed and that the `remoteRoot` in `.vscode/launch.json` equals the symlink path (`ls -l "$QGIS_PLUGINS_DIR"`).
