@@ -11,3 +11,13 @@ export PATRAC_DATA="${PATRAC_DATA:-$HOME/patracdata}"
 
 # Lets QGIS's Python import qgis.*, processing and the bundled plugins when run from a terminal.
 export PYTHONPATH="$QGIS_APP/Contents/Resources/qgis/python:$QGIS_APP/Contents/Resources/qgis/python/plugins${PYTHONPATH:+:$PYTHONPATH}"
+
+# PROJ / GDAL data for QGIS's Python run from a terminal. The QGIS app sets these itself after
+# QgsApplication.initQgis(), but plain `import qgis.core` / `osgeo` scripts do not ("Cannot find proj.db").
+if [ -d "$QGIS_APP/Contents/Resources/qgis/proj" ]; then
+  export PROJ_LIB="$QGIS_APP/Contents/Resources/qgis/proj"
+  export PROJ_DATA="$PROJ_LIB"
+fi
+if [ -d "$QGIS_APP/Contents/Resources/qgis/gdal" ]; then
+  export GDAL_DATA="$QGIS_APP/Contents/Resources/qgis/gdal"
+fi
