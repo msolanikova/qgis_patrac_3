@@ -52,13 +52,36 @@ def run():
             return len(docks), len(bars)
 
         before = counts()
+        old_saver = utils.plugins["qgis_patrac"].saveProject
+        saver_active_before = old_saver.timer.isActive()
         utils.unloadPlugin("qgis_patrac")
+        try:
+            saver_active_after = old_saver.timer.isActive()
+        except RuntimeError:  # already deleted by deleteLater: certainly not firing
+            saver_active_after = False
         after_unload = counts()
         utils.loadPlugin("qgis_patrac")
         utils.startPlugin("qgis_patrac")
         after_reload = counts()
         ok = before == (1, 1) and after_unload == (0, 0) and after_reload == (1, 1)
-        return ok, "(docks, toolbars) before=%s after_unload=%s after_reload=%s" % (before, after_unload, after_reload)
+        ok = ok and saver_active_before and not saver_active_after
+        return ok, "(docks, toolbars) before=%s after_unload=%s after_reload=%s autosave timer active before=%s after unload=%s" % (
+            before, after_unload, after_reload, saver_active_before, saver_active_after)
+
+    def autosave_is_a_main_thread_timer():
+        # QgsProject.write() must not run in a worker thread: the autosave is a QObject with an active 5 minute timer.
+        from qgis.PyQt.QtCore import QCoreApplication, QObject, QThread
+        saver = utils.plugins["qgis_patrac"].saveProject
+        problems = []
+        if not isinstance(saver, QObject) or isinstance(saver, QThread):
+            problems.append("autosave object is %s" % type(saver).__mro__[:3].__repr__())
+        if not saver.timer.isActive():
+            problems.append("timer not active")
+        if saver.timer.interval() != 300000:
+            problems.append("interval %s" % saver.timer.interval())
+        if saver.timer.thread() != QCoreApplication.instance().thread():
+            problems.append("timer not in the main thread")
+        return not problems, "; ".join(problems)
 
     def non_patrac_project_is_ignored():
         # Opening any ordinary QGIS project fires on_project_change; it must not raise.
@@ -99,6 +122,133 @@ def run():
         finally:
             project.clear()
 
+    def osm_basemap_not_duplicated():
+        # A second call, or a project that already has an OSM layer (the template's "OSM Standard"), must not add another one.
+        from qgis.core import QgsRasterLayer
+        project = QgsProject.instance()
+        project.clear()
+        utils_obj = utils.plugins["qgis_patrac"].dockWidget.Utils
+
+        def osm_layers():
+            return [l for l in project.mapLayers().values() if "tile.openstreetmap.org" in l.source()]
+
+        try:
+            utils_obj.addOsmBasemap()
+            first = [l.name() for l in osm_layers()]
+            utils_obj.addOsmBasemap()
+            second = [l.name() for l in osm_layers()]
+            project.clear()
+            template_osm = QgsRasterLayer(
+                "type=xyz&url=http://tile.openstreetmap.org/%7Bz%7D/%7Bx%7D/%7By%7D.png&zmax=19&zmin=0", "OSM Standard", "wms")
+            project.addMapLayer(template_osm)
+            utils_obj.addOsmBasemap()
+            names = [l.name() for l in project.mapLayers().values()]
+            ok = len(first) == 1 and len(second) == 1 and "OpenStreetMap" not in names
+            return ok, "after 1st call=%s after 2nd call=%s with template layer=%s" % (first, second, names)
+        finally:
+            project.clear()
+
+    def land_use_style_loads():
+        # The "sectors by land use" style must load on a sectors-like layer and know the land-use types of the Slovak pipeline.
+        from qgis.core import QgsCategorizedSymbolRenderer, QgsVectorLayer
+        import sys
+        styles = os.path.join(os.path.dirname(sys.modules["qgis_patrac"].__file__), "styles")  # the repo, through the plugin symlink
+        wanted = {"AREZAS", "ARUCZA", "HRBITO", "ZAHPAR", "SADZAH", "MAZCHU"}
+        problems = []
+        for lang in ("cs", "en", "uk"):
+            layer = QgsVectorLayer("Polygon?crs=EPSG:5514&field=typ:string(10)", "sectors", "memory")
+            message, ok = layer.loadNamedStyle(os.path.join(styles, "sectors_unique_%s.qml" % lang))
+            renderer = layer.renderer()
+            if not ok:
+                problems.append("%s: loadNamedStyle failed: %s" % (lang, message))
+            elif not isinstance(renderer, QgsCategorizedSymbolRenderer):
+                problems.append("%s: renderer is %s" % (lang, type(renderer).__name__))
+            else:
+                missing = wanted - {c.value() for c in renderer.categories()}
+                if missing:
+                    problems.append("%s: no category for %s" % (lang, sorted(missing)))
+        return not problems, "; ".join(problems)
+
+    def sectors_by_type_button_is_wired():
+        # The "Sectors by type" (land-use) button must exist, be shown with the dock and have a click handler.
+        from qgis.PyQt.QtWidgets import QAbstractButton
+        widget = utils.plugins["qgis_patrac"].dockWidget
+        button = getattr(widget, "sectorsUniqueStyle", None)
+        if not isinstance(button, QAbstractButton):
+            return False, "dock widget has no button sectorsUniqueStyle (found %r)" % (button,)
+        problems = []
+        if button.isHidden():
+            problems.append("button is hidden by code")
+        if button.toolTip() != "Sectors by type":
+            problems.append("tooltip is %r" % button.toolTip())
+        if button.receivers(button.clicked) < 1:
+            problems.append("clicked has no receiver")
+        neighbours = ("sectorsUnitsRecommendedStyle", "sectorsUnitsStyle", "sectorsProgressStyle", "sectorsSingleStyle")
+        if any(getattr(widget, n).parentWidget() is not button.parentWidget() for n in neighbours):
+            problems.append("not in the same container as the other style buttons")
+        row = widget.horizontalLayoutStyles
+        if row.indexOf(button) < 0:
+            problems.append("not in the styles row layout")
+        return not problems, "; ".join(problems)
+
+    def sectors_by_type_handler_applies_style():
+        # setSectorsUniqueValuesStyle() on a layer found the way Styles.getSectorsLayer finds it must give a categorized
+        # renderer on "typ", with an English QGIS locale and with a Slovak one (falls back to English).
+        import shutil
+        import tempfile
+        from qgis.core import (QgsCategorizedSymbolRenderer, QgsVectorFileWriter, QgsVectorLayer)
+        from qgis.PyQt.QtCore import QSettings
+        widget = utils.plugins["qgis_patrac"].dockWidget
+        project = QgsProject.instance()
+        tmp = tempfile.mkdtemp(prefix="patrac_smoke_style_")
+        settings = QSettings()
+        saved = {k: settings.value(k) for k in ("locale/overrideFlag", "locale/userLocale")}
+        problems = []
+        try:
+            os.mkdir(os.path.join(tmp, "pracovni"))
+            shp = os.path.join(tmp, "pracovni", "sektory_group.shp")
+            memory = QgsVectorLayer("Polygon?crs=EPSG:5514&field=id:string(10)&field=label:string(10)&field=typ:string(10)",
+                                    "tmp", "memory")
+            options = QgsVectorFileWriter.SaveVectorOptions()
+            options.driverName = "ESRI Shapefile"
+            options.fileEncoding = "UTF-8"
+            QgsVectorFileWriter.writeAsVectorFormatV3(memory, shp, project.transformContext(), options)
+            project.clear()
+            project.setFileName(os.path.join(tmp, "test.qgz"))
+            layer = QgsVectorLayer(shp, "sektory_group", "ogr")
+            project.addMapLayer(layer)
+            for locale in ("en_US", "sk_SK"):
+                settings.setValue("locale/overrideFlag", True)
+                settings.setValue("locale/userLocale", locale)
+                layer.setRenderer(QgsCategorizedSymbolRenderer())  # reset to an empty categorized renderer
+                layer.renderer().setClassAttribute("x")
+                widget.setSectorsUniqueValuesStyle()
+                renderer = layer.renderer()
+                if not isinstance(renderer, QgsCategorizedSymbolRenderer):
+                    problems.append("%s: renderer is %s" % (locale, type(renderer).__name__))
+                elif renderer.classAttribute() != "typ" or len(renderer.categories()) < 20:
+                    problems.append("%s: attribute %r, %d categories" % (locale, renderer.classAttribute(), len(renderer.categories())))
+        finally:
+            for k, v in saved.items():
+                if v is None:
+                    settings.remove(k)
+                else:
+                    settings.setValue(k, v)
+            project.clear()
+            shutil.rmtree(tmp, ignore_errors=True)
+        return not problems, "; ".join(problems)
+
+    def no_czech_only_buttons():
+        # The CUZK map services (ZTM10, aerial) cover only the Czech Republic; their buttons must not be in the toolbar or the menu.
+        plugin = utils.plugins["qgis_patrac"]
+        menu = [a for m in utils.iface.pluginMenu().actions() if m.menu() and m.menu().title().replace("&", "") == "Patrac"
+                for a in m.menu().actions()]
+        toolbar = list(plugin.toolbar.actions())
+        texts = lambda actions: [(a.text(), a.toolTip(), a.objectName()) for a in actions]
+        bad = [t for t in texts(toolbar) + texts(menu) if any("CUZK" in x.upper() or "ZTM10" in x.upper() for x in t)]
+        ok = not bad and len(toolbar) > 5 and len(menu) == 1  # the menu keeps its one "show/hide panel" action
+        return ok, "toolbar actions=%d menu actions=%d czech-only=%s" % (len(toolbar), len(menu), bad)
+
     def transform():
         src = QgsCoordinateReferenceSystem("EPSG:4326")
         dst = QgsCoordinateReferenceSystem("EPSG:5514")
@@ -123,8 +273,14 @@ def run():
     check("plugin started without exception", start)
     check("dock widget created and showWidget() runs", dock)
     check("unload + reload leaves exactly one Patrac panel and toolbar", reload_does_not_duplicate_ui)
+    check("autosave is a main-thread QTimer (300000 ms), not a QThread", autosave_is_a_main_thread_timer)
     check("project change on a non-Patrac project does not raise", non_patrac_project_is_ignored)
     check("OpenStreetMap basemap is added as one valid layer", osm_basemap_is_added)
+    check("addOsmBasemap does not add a second OpenStreetMap layer", osm_basemap_not_duplicated)
+    check("sectors land-use style loads in cs/en/uk with categories for the new types", land_use_style_loads)
+    check("'Sectors by type' button exists, is in the styles row and has a click handler", sectors_by_type_button_is_wired)
+    check("'Sectors by type' handler gives a categorized renderer on typ (en and sk locale)", sectors_by_type_handler_applies_style)
+    check("toolbar and plugin menu have no Czech-only CUZK buttons", no_czech_only_buttons)
     check("config.json exists with data_path equal to PATRAC_DATA/", config)
     check("PATRAC_DATA/doc/index.html exists", doc)
     check("municipality list comes from PATRAC_DATA/kraje/*/places.csv", municipalities_come_from_region_folders)

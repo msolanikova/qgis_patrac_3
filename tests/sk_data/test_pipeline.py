@@ -10,7 +10,7 @@ import numpy as np
 
 from tests.sk_data.osm_fixture import write_fixture
 from tests.sk_data.test_landcover import write_raster
-from tools.sk_data import pipeline
+from tools.sk_data import naming, pipeline
 from tools.sk_data.__main__ import main
 from tools.sk_data.config import REGIONS, SectorSize, region_dir
 from tools.sk_data.crs import wgs84_to_sjtsk
@@ -44,6 +44,34 @@ class PipelineTest(unittest.TestCase):
             self.assertTrue(os.path.exists(os.path.join(out_dir, "vektor", "ZABAGED", name + ".shp")), name)
         self.assertEqual(read_json(os.path.join(out_dir, "metadata.json"))["landcover"], "osm")
         self.assertTrue(os.path.exists(os.path.join(out_dir, "places.csv")))
+
+    def test_sectors_shapefile_has_string_id_and_label(self):
+        import re
+        import geopandas as gpd
+        from osgeo import ogr
+        problems, report, out_dir = self.build(landcover_mode="osm")
+        self.assertEqual(problems, [])
+        path = os.path.join(out_dir, "vektor", "ZABAGED", "sectors.shp")
+        dataset = ogr.Open(path)
+        definition = dataset.GetLayer(0).GetLayerDefn()
+        types = {definition.GetFieldDefn(i).GetName(): definition.GetFieldDefn(i).GetType() for i in range(definition.GetFieldCount())}
+        names = [definition.GetFieldDefn(i).GetName() for i in range(definition.GetFieldCount())]
+        definition = dataset = None
+        # The plugin writes and reads sector attributes by position (id, label, typ, stav, ...): the merge in
+        # patracdockwidget.py, split by grid in main/utils.py and ui/ui_sector.py (attributes()[1] is the name).
+        self.assertEqual(names[:3], ["id", "label", "typ"])
+        self.assertEqual(types["id"], ogr.OFTString)
+        self.assertEqual(types["label"], ogr.OFTString)
+        sectors = gpd.read_file(path)
+        n = len(sectors)
+        self.assertEqual(sorted(int(i) for i in sectors["id"]), list(range(1, n + 1)))
+        order = naming.reading_order([(g, None) for g in sectors.geometry])                # ids ascend along the reading order
+        self.assertEqual([int(sectors["id"].iloc[k]) for k in order], list(range(1, n + 1)))
+        self.assertTrue(all(isinstance(i, str) and re.match(r"^[1-9][0-9]*$", i) for i in sectors["id"]))
+        self.assertTrue(all(isinstance(l, str) and re.match(r"^[A-Z][0-9]+$", l) for l in sectors["label"]))
+        self.assertEqual(report["id_max"], n)
+        self.assertEqual(report["labels"]["duplicated_labels"], 0)         # the fixture is far smaller than one grid cell group
+        self.assertLessEqual(report["labels"]["max_length"], 4)
 
     def test_worldcover_fills_the_gaps(self):
         tif = os.path.join(self.root, "wc.tif")

@@ -278,8 +278,8 @@ class PatracPlugin(object):
         self.toolbar.addAction(self.iface.actionVertexToolActiveLayer())
         self.addSplitByGridButton()
         self.addPrintMapButton()
-        self.addAddZTM10Button()
-        self.addAddAerialCUZKButton()
+        # The ZTM10 and CUZK aerial buttons are not added: those services cover only the Czech Republic.
+        # addAddZTM10Button() and addAddAerialCUZKButton() are kept for a possible later reuse.
         self.addLanguageSelection()
 
     def addRecalculateButton(self):
@@ -400,6 +400,8 @@ class PatracPlugin(object):
         #             subprocess.Popen(("qgis", "--profiles-path", "/home/jencek/qgis3_profiles", "--profile", "default"))
         #         except:
         #             print("CAN NOT FIND QGIS TO RELOAD")
+        self.saveProject.stop()  # otherwise the timer would fire into an unloaded plugin
+        self.saveProject.deleteLater()
         self.iface.currentLayerChanged.disconnect(self.layerChanged)
         self.iface.removePluginMenu(QCoreApplication.translate("Patrac", "Patrac"), self.actionDock)
         self.iface.removeDockWidget(self.dockWidget)

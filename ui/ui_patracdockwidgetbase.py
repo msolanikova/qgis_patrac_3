@@ -256,13 +256,13 @@ class Ui_PatracDockWidget(object):
         self.sectorsProgressStyle.setToolTip(QApplication.translate("PatracDockWidget", "Sectors by state", None))
         self.horizontalLayoutStyles.addWidget(self.sectorsProgressStyle)
 
-        # self.sectorsUniqueStyle = QPushButton(self.dockWidgetContents)
-        # self.sectorsUniqueStyle.setObjectName(_fromUtf8("sectorsUniqueStyle"))
-        # self.sectorsUniqueStyle.setIcon(QIcon(os.path.join(os.path.dirname(__file__), "sectors_unique.png")));
-        # self.sectorsUniqueStyle.setIconSize(QSize(24,24));
-        # self.sectorsUniqueStyle.setFixedSize(QSize(32,32));
-        # self.sectorsUniqueStyle.setToolTip(QApplication.translate("PatracDockWidget", "Sectors by type", None))
-        # self.horizontalLayoutStyles.addWidget(self.sectorsUniqueStyle)
+        self.sectorsUniqueStyle = QPushButton(self.dockWidgetContents)
+        self.sectorsUniqueStyle.setObjectName(_fromUtf8("sectorsUniqueStyle"))
+        self.sectorsUniqueStyle.setIcon(QIcon(os.path.join(os.path.dirname(__file__), "sectors_unique.png")));
+        self.sectorsUniqueStyle.setIconSize(QSize(24,24));
+        self.sectorsUniqueStyle.setFixedSize(QSize(32,32));
+        self.sectorsUniqueStyle.setToolTip(QApplication.translate("PatracDockWidget", "Sectors by type", None))
+        self.horizontalLayoutStyles.addWidget(self.sectorsUniqueStyle)
 
         self.sectorsSingleStyle = QPushButton(self.dockWidgetContents)
         self.sectorsSingleStyle.setObjectName(_fromUtf8("sectorsSingleStyle"))

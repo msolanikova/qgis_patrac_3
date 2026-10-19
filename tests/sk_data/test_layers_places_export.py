@@ -115,7 +115,9 @@ class PlacesTest(unittest.TestCase):
 
 class ExportValidateTest(unittest.TestCase):
     def build(self, d, sectors, region_geom):
-        frame = export.sectors_frame(sectors)
+        return self.build_frame(d, export.sectors_frame(sectors), region_geom)
+
+    def build_frame(self, d, frame, region_geom):
         lines = {"cesta": gpd.GeoDataFrame({"highway": ["x"], "name": [None]}, geometry=[LineString([(0, 0), (1, 1)])], crs=5514),
                  "lespru": gpd.GeoDataFrame({"highway": [], "name": []}, geometry=[], crs=5514),
                  "vodtok": gpd.GeoDataFrame({"waterway": ["stream"], "name": ["p"]}, geometry=[LineString([(0, 0), (1, 1)])], crs=5514)}
@@ -129,6 +131,17 @@ class ExportValidateTest(unittest.TestCase):
             export.sectors_frame([(bowtie, "A")])
         with self.assertRaises(ValueError):
             export.sectors_frame([(box(0, 0, 1, 1).union(box(5, 5, 6, 6)), "A")])
+
+    def test_sectors_frame_has_string_id_label_typ_in_the_order_the_plugin_reads(self):
+        frame = export.sectors_frame([(box(0, 0, 300, 250), "LPSTROM"), (box(300, 0, 600, 250), "ORNAPU")])
+        # The plugin writes and reads sector attributes by position (id, label, typ, stav, ...): the merge in
+        # patracdockwidget.py, split by grid in main/utils.py and ui/ui_sector.py (attributes()[1] is the name).
+        self.assertEqual(list(frame.columns), ["id", "label", "typ", "geometry"])
+        self.assertEqual(sorted(frame["id"]), ["1", "2"])
+        self.assertEqual(list(frame["label"]), ["A1", "A2"])         # west to east inside one cell and one band
+        self.assertEqual(list(frame["id"]), ["1", "2"])
+        for column in ("id", "label"):
+            self.assertTrue(all(isinstance(v, str) for v in frame[column]), column)
 
     def test_good_output_passes(self):
         sectors = [(box(0, 0, 300, 250), "LPSTROM"), (box(300, 0, 600, 250), "ORNAPU")]  # 7.5 ha each
@@ -160,6 +173,108 @@ class ExportValidateTest(unittest.TestCase):
             self.assertIn("overlap", text)
             self.assertIn("larger than", text)
             self.assertIn("differs from the region area", text)
+
+    # --- the id and label checks -------------------------------------------------------------------------------
+
+    def two_sectors(self, distance=5000, **columns):
+        """Two 7.5 ha sectors `distance` m apart (west to east); columns replace the generated ones. Returns (problems, report)."""
+        a, b = box(0, 0, 300, 250), box(distance, 0, distance + 300, 250)
+        frame = export.sectors_frame([(a, "LPSTROM"), (b, "ORNAPU")])
+        for name, values in columns.items():
+            if values is None:
+                frame = frame.drop(columns=[name])
+            else:
+                frame[name] = values
+        with tempfile.TemporaryDirectory() as d:
+            return self.build_frame(d, frame, a.union(b))
+
+    def test_good_ids_and_labels_are_reported(self):
+        problems, report = self.two_sectors()
+        self.assertEqual(problems, [])
+        self.assertEqual(report["id_max"], 2)
+        self.assertEqual(report["labels"], {"max_length": 2, "duplicated_labels": 0})
+
+    def test_missing_id_or_label_field(self):
+        text = " | ".join(self.two_sectors(id=None)[0])
+        self.assertIn("no 'id' field", text)
+        self.assertNotIn("label", text)
+        text = " | ".join(self.two_sectors(label=None)[0])
+        self.assertIn("no 'label' field", text)
+
+    def test_duplicate_ids(self):
+        problems, _ = self.two_sectors(id=["7", "7"])
+        self.assertIn("duplicate id", " | ".join(problems))
+
+    def test_ids_must_be_positive_integers_below_the_plugin_base(self):
+        for bad in ("0", "-3", "1.5", "abc", "", "1000000", "5000000"):
+            problems, _ = self.two_sectors(id=["1", bad])
+            self.assertIn("not a positive integer below 1000000", " | ".join(problems), bad)
+        problems, report = self.two_sectors(id=["1", "999999"])
+        self.assertEqual(problems, [])
+        self.assertEqual(report["id_max"], 999999)
+
+    def test_label_format(self):
+        for bad in ("142", "k142", "K", "KA1", "K1a", "K-1", ""):
+            problems, _ = self.two_sectors(label=["A1", bad])
+            self.assertIn("do not match", " | ".join(problems), bad)
+
+    def test_the_same_label_close_together_is_a_problem(self):
+        problems, report = self.two_sectors(distance=5000, label=["K1", "K1"])
+        self.assertIn("same label", " | ".join(problems))
+        self.assertIn("K1", " | ".join(problems))
+
+    def test_the_same_label_far_apart_is_fine_and_counted(self):
+        problems, report = self.two_sectors(distance=60000, label=["K1", "K1"])
+        self.assertEqual(problems, [])
+        self.assertEqual(report["labels"], {"max_length": 2, "duplicated_labels": 1})
+
+    def test_the_30_km_limit(self):
+        self.assertIn("same label", " | ".join(self.two_sectors(distance=29000, label=["K1", "K1"])[0]))
+        self.assertEqual(self.two_sectors(distance=31000, label=["K1", "K1"])[0], [])
+
+    def test_label_check_is_fast_for_many_sectors(self):
+        import time
+        import numpy as np
+        from tools.sk_data.validate import label_conflicts
+        rnd = np.random.RandomState(3)
+        n = 110000
+        xy = rnd.uniform(0, 200000, size=(n, 2))
+        labels = np.array(["K%d" % (i % 40) for i in range(n)], dtype=object)          # 2750 sectors per label
+        t0 = time.time()
+        label_conflicts(labels, xy)
+        self.assertLess(time.time() - t0, 60)
+
+    def test_label_conflicts_finds_every_close_pair_of_the_same_label(self):
+        import numpy as np
+        from tools.sk_data.validate import label_conflicts
+        labels = np.array(["A1", "A1", "B2", "B2", "A1", "C3"], dtype=object)
+        xy = np.array([[0, 0], [29000, 0], [0, 0], [31000, 0], [100000, 100000], [1, 1]], dtype=float)
+        self.assertEqual(label_conflicts(labels, xy), {"A1": 1})          # B2 is far apart, C3 is alone
+
+    def test_an_empty_sectors_file_gives_a_report_not_an_exception(self):
+        empty = gpd.GeoDataFrame({"typ": [], "id": [], "label": []}, geometry=[], crs=5514)
+        with tempfile.TemporaryDirectory() as d:
+            problems, report = self.build_frame(d, empty, box(0, 0, 600, 250))
+        self.assertIsInstance(problems, list)
+        self.assertEqual(report["labels"]["max_length"], 0)
+        self.assertEqual(report["labels"]["duplicated_labels"], 0)
+        self.assertEqual(report["id_max"], 0)
+
+    def test_empty_or_null_labels_are_a_format_problem_not_a_duplicate_label(self):
+        problems, report = self.two_sectors(distance=1000, label=[None, None])
+        text = " | ".join(problems)
+        self.assertIn("do not match", text)
+        self.assertNotIn("same label", text)
+        self.assertEqual(report["labels"]["duplicated_labels"], 0)
+        problems, _ = self.two_sectors(distance=1000, label=["", ""])
+        text = " | ".join(problems)
+        self.assertIn("do not match", text)
+        self.assertNotIn("same label", text)
+
+    def test_label_conflicts_ignores_empty_labels(self):
+        import numpy as np
+        from tools.sk_data.validate import label_conflicts
+        self.assertEqual(label_conflicts(np.array(["", ""], dtype=object), np.array([[0.0, 0.0], [1.0, 1.0]])), {})
 
     def test_missing_files_are_reported(self):
         with tempfile.TemporaryDirectory() as d:

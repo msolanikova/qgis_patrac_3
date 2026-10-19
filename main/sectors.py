@@ -27,6 +27,7 @@
 # ******************************************************************************
 
 from ..patrac_paths import settings_dir
+from .labels import label_sort_key
 import csv, io, math, subprocess, os, sys, uuid, webbrowser
 import collections
 import json
@@ -59,16 +60,8 @@ else:
         from .report_export_en import *
 
 def get_label(f):
-    if len(f['label']) >= 5:
-        return f['label']
-    if len(f['label']) == 4:
-        return f['label'][:2] + "0" + f['label'][2:4]
-    if len(f['label']) == 3:
-        return f['label'][:2] + "00" + f['label'][2:3]
-    if len(f['label']) == 2:
-        return f['label'][:1] + "000" + f['label'][1:2]
-    if len(f['label']) == 1:
-        return f['label'] + "0000"
+    """Sort key of a sector feature for the report: natural order of the label (B505 before B1012)."""
+    return label_sort_key(f['label'])
 
 class Sectors(object):
     def __init__(self, widget):
