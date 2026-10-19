@@ -42,8 +42,53 @@ from qgis.PyQt.QtWidgets import *
 
 import processing
 
+PERCENT_CLASSES = [10, 20, 30, 40, 50, 60, 70, 80, 95]
+
+
+def get_percent(distances, cur_distance):
+    """Maps a distance in metres to the percent class: the first class whose limit in distances is above it, else 95."""
+    pos = 0
+    for distance in distances:
+        if cur_distance < float(distance):
+            return PERCENT_CLASSES[pos]
+        pos += 1
+    return 95
+
+
+def compute_percents(sector_geoms, point_geoms, distances, progress=None):
+    """Returns {sector id: percent class} from the minimum distance of each sector to the points.
+
+    Works on plain QgsGeometry objects only (no layers), so it is safe to call from a worker thread.
+    sector_geoms is a dict {id: QgsGeometry}, point_geoms a list of QgsGeometry, progress an optional
+    callable that gets a fraction 0..1. Without any point every sector gets the last class (the old code
+    started from 1000000 m and never lowered it).
+    """
+    result = {}
+    total = len(sector_geoms)
+    for count, (sector_id, sector_geom) in enumerate(sector_geoms.items(), 1):
+        dist = 1000000
+        for point_geom in point_geoms:
+            cur_dist = sector_geom.distance(point_geom)
+            if cur_dist < dist:
+                dist = cur_dist
+        result[sector_id] = get_percent(distances, dist)
+        if progress is not None and (count % 200 == 0 or count == total):
+            progress(count / total)
+    return result
+
+
+def find_project_layer(data_path, relative_source):
+    """Finds the project layer whose source contains data_path + relative_source. Main thread only."""
+    for lyr in list(QgsProject.instance().mapLayers().values()):
+        if data_path + relative_source in lyr.source():
+            return lyr
+    return None
+
+
 class CalculateDistance(QgsTask):
-    # This is a lite version of the calculation that does not need GRASS GIS, but it is not so accurate
+    # This is a lite version of the calculation that does not need GRASS GIS, but it is not so accurate.
+    # Threading: QGIS reads project layers in the main thread (layer tree, canvas) while a task runs, so the layers
+    # are touched only in __init__ and finished() (main thread). run() works on copies of the geometries.
     def __init__(self, widget, parent, params):
         super().__init__("Calculate Distance Task", QgsTask.CanCancel)
         self.widget = widget
@@ -52,88 +97,72 @@ class CalculateDistance(QgsTask):
         self.data_path = params["data_path"]
         self.finish_steps = params["finish_steps"]
         self.exception: Optional[Exception] = None
+        self.sector_geoms = {}
+        self.point_geoms = []
+        self.distances = []
+        self.percents = {}
+        try:
+            self.snapshot()
+        except Exception as e:
+            QgsMessageLog.logMessage("Error in CalculateDistance (reading the layers): " + str(e), "Patrac")
+            self.exception = e
+
+    def snapshot(self):
+        """Copies the input data from the project layers (main thread)."""
+        layer = find_project_layer(self.data_path, "pracovni/sektory_group.shp")
+        points_layer = find_project_layer(self.data_path, "pracovni/mista.shp")
+        # All sectors are needed, not only the filtered ones
+        layer.setSubsetString('')
+
+        # Selected places if there are any, otherwise all places of the data provider
+        points_features = points_layer.selectedFeatures()
+        if len(points_features) == 0:
+            points_features = points_layer.dataProvider().getFeatures()
+        self.point_geoms = [QgsGeometry(f.geometry()) for f in points_features]
+        self.sector_geoms = {f.id(): QgsGeometry(f.geometry()) for f in layer.dataProvider().getFeatures()}
+        self.distances = self.get_distances()
 
     def run(self):
+        # Plain objects only: no project layer is read or written here.
         try:
-            progress = 10
-            self.setProgress(progress)
-
-            # self.widget.Utils.removeLayer(self.widget.Utils.getDataPath() + "/pracovni/sektory_group.shp")
-            # layer = QgsVectorLayer(self.widget.Utils.getDataPath() + "/pracovni/sektory_group.shp", "sektory", "ogr")
-
-            layer = None
-            for lyr in list(QgsProject.instance().mapLayers().values()):
-                if self.data_path + "pracovni/sektory_group.shp" in lyr.source():
-                    layer = lyr
-                    break
-
-            points_layer = None
-            for lyr in list(QgsProject.instance().mapLayers().values()):
-                if self.data_path + "pracovni/mista.shp" in lyr.source():
-                    points_layer = lyr
-                    break
-
-            # print(self.data_path)
-            # print(layer)
-            # print(points_layer)
-            # print("OK 1")
-            layer.setSubsetString('')
-            provider = layer.dataProvider()
-            points_provider = points_layer.dataProvider()
-
-            # print("OK 2")
-            # # clear the statistics first
-            # layer.startEditing()
-            # features = provider.getFeatures()
-            # for feature in features:
-            #     feature.setAttribute('stats_min', NULL)
-            #     layer.updateFeature(feature)
-
-            # print("OK 3")
-            point_features_selected = points_layer.selectedFeatures()
-            point_features_selected_count = 0
-            for point_feature_selected in point_features_selected:
-                point_features_selected_count += 1
-
-            # print("OK 4")
-            layer.startEditing()
-            features = provider.getFeatures()
-            distances = self.get_distances()
-            # print("OK 5")
-            for feature in features:
-                if point_features_selected_count > 0:
-                    points_features = points_layer.selectedFeatures()
-                else:
-                    points_features = points_provider.getFeatures()
-                dist = 1000000
-                for point_feature in points_features:
-                    cur_dist = feature.geometry().distance(point_feature.geometry())
-                    if cur_dist < dist:
-                        dist = cur_dist
-                feature['stats_min'] = self.get_percent(distances, dist)
-                # feature['percent'] = cur_dist
-                # print("OK 6")
-                layer.updateFeature(feature)
-            # print("OK 7")
-            layer.commitChanges()
-
-            # locale = self.widget.Utils.getLocale()
-            # self.widget.Utils.addVectorLayerWithStyle(self.widget.Utils.getDataPath() + "/pracovni/sektory_group.shp",
-            #                                     self.widget.Utils.getLayerName("sektory_group.shp"),
-            #                                     "sectors_single_" + locale, 5514)
-
-            progress = 100
-            self.setProgress(progress)
-
+            if self.exception is not None:
+                return False
+            self.setProgress(10)
+            self.percents = compute_percents(self.sector_geoms, self.point_geoms, self.distances,
+                                             lambda fraction: self.setProgress(10 + 80 * fraction))
+            self.setProgress(100)
             return True
         except Exception as e:
-            # print(str(e))
-            QgsMessageLog.logMessage("Error in CalculateDistanceCostedCumulativeTask: " + str(e), "Patrac")
+            QgsMessageLog.logMessage("Error in CalculateDistance: " + str(e), "Patrac")
             self.exception = e
             return False
 
+    def write_results(self):
+        """Writes stats_min of every sector and commits (main thread)."""
+        layer = find_project_layer(self.data_path, "pracovni/sektory_group.shp")
+        if layer is None:
+            raise RuntimeError("The layer with sectors is not in the project.")
+        layer.setSubsetString('')
+        field = layer.fields().lookupField('stats_min')
+        if field < 0:
+            raise RuntimeError("The layer with sectors has no field stats_min.")
+        layer.startEditing()
+        for feature_id, percent in self.percents.items():
+            layer.changeAttributeValue(feature_id, field, percent)
+        if not layer.commitChanges():
+            errors = "; ".join(layer.commitErrors())
+            layer.rollBack()
+            raise RuntimeError("Can not save stats_min: " + errors)
+
     def finished(self, result):
         QgsMessageLog.logMessage("Task Calculate Distance Task FINISHED", "Patrac")
+        if result:
+            try:
+                self.write_results()
+            except Exception as e:
+                QgsMessageLog.logMessage("Error in CalculateDistance (writing stats_min): " + str(e), "Patrac")
+                self.exception = e
+                result = False
         if result:
             if self.finish_steps:
                 self.widget.finishRecalculateAll()
@@ -153,13 +182,7 @@ class CalculateDistance(QgsTask):
             return items
 
     def get_percent(self, distances, cur_distance):
-        variables = [10, 20, 30, 40, 50, 60, 70, 80, 95]
-        pos = 0
-        for distance in distances:
-            if cur_distance < float(distance):
-                return variables[pos]
-            pos += 1
-        return 95
+        return get_percent(distances, cur_distance)
 
 class Area(object):
     def __init__(self, widget):
