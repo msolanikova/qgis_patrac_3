@@ -29,6 +29,10 @@ To look at a single place first, build only a 12 x 10 km window around a point (
 
 A window has no municipality list (it writes an empty `places.csv`) and must be written to its own `--out` folder.
 
+To regenerate only the municipality list, without rebuilding the sectors, run
+`"$QGIS_PY" -m tools.sk_data places --region ke [--out DIR]`. It takes about a minute and writes just `places.csv`
+(to `~/patracdata/kraje/<region>` unless `--out` is given), replacing an existing one.
+
 Options of `build`:
 
 | Option | Meaning |
@@ -82,6 +86,8 @@ Slovakia.
 
 The folder is called `ZABAGED` only because the plugin looks for that name; the data is not ZABAGED.
 `places.csv` columns: `x;y;0;name;0;district;REGION`. The two zero columns are codes the plugin does not read.
+The list holds the OSM municipalities (`admin_level=8`) and the two cities that are split into districts,
+Košice and Bratislava, which OSM maps as `admin_level=5`.
 
 ## Review the guessed mappings
 
