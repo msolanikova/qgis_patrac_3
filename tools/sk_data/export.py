@@ -7,6 +7,8 @@ from datetime import datetime, timezone
 
 import geopandas as gpd
 
+from tools.sk_data.naming import assign_ids_and_labels
+
 PLUGIN_DATA_VERSION = "2020-01-01"  # what Project.checkRegion in the plugin requires of metadata.json
 LAST_SECTOR_ID = 1000000            # the plugin's own fallback when lastsectorid.txt is missing
 ATTRIBUTION = """Data attribution
@@ -23,11 +25,16 @@ Share-alike: publishing this derived data requires ODbL handling. Keep this noti
 
 
 def sectors_frame(sectors):
-    """GeoDataFrame (EPSG:5514) with the string field 'typ' from [(Polygon, typ)]. Every geometry must be a valid Polygon."""
+    """GeoDataFrame (EPSG:5514) with the string fields 'typ', 'id' and 'label' from [(Polygon, typ)].
+
+    Every geometry must be a valid Polygon. id and label (see naming.py) are what the plugin needs for filters and names.
+    """
     broken = sum(1 for g, _ in sectors if g.geom_type != "Polygon" or not g.is_valid)
     if broken:
         raise ValueError("%d sectors are not valid single polygons" % broken)
-    return gpd.GeoDataFrame({"typ": [t for _, t in sectors]}, geometry=[g for g, _ in sectors], crs=5514)
+    ids, labels = assign_ids_and_labels(sectors)
+    return gpd.GeoDataFrame({"typ": [t for _, t in sectors], "id": ids, "label": labels},
+                            geometry=[g for g, _ in sectors], crs=5514)
 
 
 def zabaged_dir(out_dir):

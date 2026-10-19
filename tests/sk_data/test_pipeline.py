@@ -45,6 +45,28 @@ class PipelineTest(unittest.TestCase):
         self.assertEqual(read_json(os.path.join(out_dir, "metadata.json"))["landcover"], "osm")
         self.assertTrue(os.path.exists(os.path.join(out_dir, "places.csv")))
 
+    def test_sectors_shapefile_has_string_id_and_label(self):
+        import re
+        import geopandas as gpd
+        from osgeo import ogr
+        problems, report, out_dir = self.build(landcover_mode="osm")
+        self.assertEqual(problems, [])
+        path = os.path.join(out_dir, "vektor", "ZABAGED", "sectors.shp")
+        dataset = ogr.Open(path)
+        definition = dataset.GetLayer(0).GetLayerDefn()
+        types = {definition.GetFieldDefn(i).GetName(): definition.GetFieldDefn(i).GetType() for i in range(definition.GetFieldCount())}
+        definition = dataset = None
+        self.assertEqual(types["id"], ogr.OFTString)
+        self.assertEqual(types["label"], ogr.OFTString)
+        sectors = gpd.read_file(path)
+        n = len(sectors)
+        self.assertEqual(sorted(int(i) for i in sectors["id"]), list(range(1, n + 1)))
+        self.assertTrue(all(isinstance(i, str) and re.match(r"^[1-9][0-9]*$", i) for i in sectors["id"]))
+        self.assertTrue(all(isinstance(l, str) and re.match(r"^[A-Z][0-9]+$", l) for l in sectors["label"]))
+        self.assertEqual(report["id_max"], n)
+        self.assertEqual(report["labels"]["duplicated_labels"], 0)         # the fixture is far smaller than one grid cell group
+        self.assertLessEqual(report["labels"]["max_length"], 4)
+
     def test_worldcover_fills_the_gaps(self):
         tif = os.path.join(self.root, "wc.tif")
         write_raster(tif, np.full((700, 700), 40, dtype=np.uint8), origin=(21.17, 48.75))  # cropland everywhere, 0.07 deg square

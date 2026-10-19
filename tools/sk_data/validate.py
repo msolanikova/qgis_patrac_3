@@ -3,17 +3,46 @@
 
 import json
 import os
+import re
 
 import geopandas as gpd
 import numpy as np
+import pandas as pd
 import shapely
 from shapely.strtree import STRtree
 
 from tools.sk_data.crs import wgs84_to_sjtsk
-from tools.sk_data.export import PLUGIN_DATA_VERSION, zabaged_dir
+from tools.sk_data.export import LAST_SECTOR_ID, PLUGIN_DATA_VERSION, zabaged_dir
 
 KOSICE = (21.2611, 48.7164)          # lon, lat
 KOSICE_SJTSK = (-262580.66, -1240038.58)  # EPSG:4836 result
+
+ID_PATTERN = re.compile(r"^[1-9][0-9]*$")
+LABEL_PATTERN = re.compile(r"^[A-Z][0-9]+$")
+LABEL_MIN_DISTANCE_M = 30000.0   # the same label may be used again only farther away than this (the grid gives 36 km)
+CHUNK = 5000
+
+
+def label_conflicts(labels, xy):
+    """{label: number of pairs of sectors with that label closer than LABEL_MIN_DISTANCE_M}; only labels with pairs.
+
+    labels: array of strings, xy: array (n, 2) of reference points in metres. Only labels used more than once are
+    looked at, one label at a time, with a spatial index, so 110,000 sectors do not need all pairs.
+    """
+    labels = np.asarray(labels, dtype=object)
+    xy = np.asarray(xy, dtype=float)
+    values, inverse, counts = np.unique(labels.astype(str), return_inverse=True, return_counts=True)
+    conflicts = {}
+    for k in np.flatnonzero(counts > 1):
+        points = shapely.points(xy[inverse == k])
+        tree = STRtree(points)
+        pairs = 0
+        for start in range(0, len(points), CHUNK):
+            a_idx, b_idx = tree.query(points[start:start + CHUNK], predicate="dwithin", distance=LABEL_MIN_DISTANCE_M)
+            pairs += int((a_idx + start < b_idx).sum())
+        if pairs:
+            conflicts[str(values[k])] = pairs
+    return conflicts
 
 
 def validate(out_dir, region, size, classes, area_tolerance=0.02):
@@ -44,6 +73,8 @@ def validate(out_dir, region, size, classes, area_tolerance=0.02):
     invalid = int((~sectors.geometry.is_valid).sum())
     if invalid:
         problems.append("%d invalid sector geometries" % invalid)
+
+    _check_ids_and_labels(sectors, problems, report)
 
     areas = sectors.geometry.area.to_numpy()
     total = float(areas.sum())
@@ -93,3 +124,40 @@ def validate(out_dir, region, size, classes, area_tolerance=0.02):
     if abs(x - KOSICE_SJTSK[0]) > 1.0 or abs(y - KOSICE_SJTSK[1]) > 1.0:
         problems.append("the WGS84 -> S-JTSK transformation does not give the Slovak result at Kosice (%.1f, %.1f)" % (x, y))
     return problems, report
+
+
+def _strings(column):
+    """The column as a Series of Python strings; null values (and anything that is not text) become ''."""
+    return pd.Series([v if isinstance(v, str) else "" for v in column], index=column.index, dtype=object)
+
+
+def _check_ids_and_labels(sectors, problems, report):
+    """The fields the plugin's later steps need: a unique integer-string id below the split base, and a letter+number label."""
+    for name in ("id", "label"):
+        if name not in sectors.columns:
+            problems.append("sectors.shp has no '%s' field" % name)
+    if "id" in sectors.columns:
+        ids = _strings(sectors["id"])
+        duplicates = int(ids.duplicated().sum())
+        if duplicates:
+            problems.append("%d duplicate id values" % duplicates)
+        valid = ids.map(lambda v: bool(ID_PATTERN.match(v)) and int(v) < LAST_SECTOR_ID)
+        if not valid.all():
+            problems.append("%d ids are not a positive integer below %d (examples: %s)"
+                            % (int((~valid).sum()), LAST_SECTOR_ID, list(ids[~valid].head(3))))
+        report["id_max"] = int(ids[valid].astype(int).max()) if valid.any() else 0
+    if "label" in sectors.columns:
+        labels = _strings(sectors["label"])
+        bad = ~labels.map(lambda v: bool(LABEL_PATTERN.match(v)))
+        if bad.any():
+            problems.append("%d labels do not match one capital letter followed by digits (examples: %s)"
+                            % (int(bad.sum()), list(labels[bad].head(3))))
+        report["labels"] = {"max_length": int(labels.str.len().max()),
+                            "duplicated_labels": int((labels.value_counts() > 1).sum())}
+        if report["labels"]["duplicated_labels"]:
+            reference = shapely.get_coordinates(shapely.point_on_surface(sectors.geometry.values))
+            conflicts = label_conflicts(labels.to_numpy(), reference)
+            if conflicts:
+                examples = sorted(conflicts)[:3]
+                problems.append("sectors with the same label are closer than %.0f m: %d labels, %d pairs (examples: %s)"
+                                % (LABEL_MIN_DISTANCE_M, len(conflicts), sum(conflicts.values()), examples))
