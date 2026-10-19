@@ -1,0 +1,11 @@
+{
+  "TRTRPO": 1, "ODPOCI": 1, "OSPLSI": 1,
+  "ORNAPU": 2, "SADZAH": 2,
+  "KOLEJI": 3, "POTELO": 3, "SKLADK": 3,
+  "LPSTROM": 4, "VINICE": 4, "CHMELN": 4,
+  "LPKOSO": 5, "LPKROV": 5, "MAZCHU": 5,
+  "AREZAS": 6, "ARUCZA": 6, "HRBITO": 6, "PRSTPR": 6, "ROZTRA": 6, "ROZZRI": 6, "ULOMIS": 6, "USNAOD": 6, "INTRAV": 6,
+  "ZAHPAR": 7,
+  "VODPLO": 9,
+  "ELEKTR": 10, "LETISTE": 10, "OTHER": 10
+}

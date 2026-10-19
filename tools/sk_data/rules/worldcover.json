@@ -1,0 +1,16 @@
+{
+  "source": "ESA WorldCover 2021 v200 class value -> typ",
+  "classes": {
+    "10": "LPSTROM",
+    "20": "LPKROV",
+    "30": "TRTRPO",
+    "40": "ORNAPU",
+    "50": "AREZAS",
+    "60": "OTHER",
+    "70": "OTHER",
+    "80": "VODPLO",
+    "90": "MAZCHU",
+    "95": "OTHER",
+    "100": "OTHER"
+  }
+}

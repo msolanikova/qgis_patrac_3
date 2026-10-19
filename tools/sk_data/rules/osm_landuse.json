@@ -1,0 +1,275 @@
+{
+ "comment": "First matching row wins. status 'guess' = a mapping the author could not confirm; review these.",
+ "rows": [
+  {
+   "key": "landuse",
+   "value": "forest",
+   "typ": "LPSTROM",
+   "status": "verified"
+  },
+  {
+   "key": "landuse",
+   "value": "farmland",
+   "typ": "ORNAPU",
+   "status": "verified"
+  },
+  {
+   "key": "landuse",
+   "value": "meadow",
+   "typ": "TRTRPO",
+   "status": "verified"
+  },
+  {
+   "key": "landuse",
+   "value": "grass",
+   "typ": "TRTRPO",
+   "status": "verified"
+  },
+  {
+   "key": "landuse",
+   "value": "village_green",
+   "typ": "TRTRPO",
+   "status": "guess"
+  },
+  {
+   "key": "landuse",
+   "value": "orchard",
+   "typ": "SADZAH",
+   "status": "verified"
+  },
+  {
+   "key": "landuse",
+   "value": "allotments",
+   "typ": "SADZAH",
+   "status": "verified"
+  },
+  {
+   "key": "landuse",
+   "value": "vineyard",
+   "typ": "VINICE",
+   "status": "verified"
+  },
+  {
+   "key": "landuse",
+   "value": "residential",
+   "typ": "AREZAS",
+   "status": "verified"
+  },
+  {
+   "key": "landuse",
+   "value": "commercial",
+   "typ": "AREZAS",
+   "status": "verified"
+  },
+  {
+   "key": "landuse",
+   "value": "retail",
+   "typ": "AREZAS",
+   "status": "verified"
+  },
+  {
+   "key": "landuse",
+   "value": "garages",
+   "typ": "AREZAS",
+   "status": "guess"
+  },
+  {
+   "key": "landuse",
+   "value": "construction",
+   "typ": "AREZAS",
+   "status": "guess"
+  },
+  {
+   "key": "landuse",
+   "value": "religious",
+   "typ": "AREZAS",
+   "status": "guess"
+  },
+  {
+   "key": "landuse",
+   "value": "education",
+   "typ": "ARUCZA",
+   "status": "guess"
+  },
+  {
+   "key": "landuse",
+   "value": "institutional",
+   "typ": "ARUCZA",
+   "status": "guess"
+  },
+  {
+   "key": "landuse",
+   "value": "industrial",
+   "typ": "ARUCZA",
+   "status": "verified"
+  },
+  {
+   "key": "landuse",
+   "value": "military",
+   "typ": "ARUCZA",
+   "status": "guess"
+  },
+  {
+   "key": "landuse",
+   "value": "cemetery",
+   "typ": "HRBITO",
+   "status": "verified"
+  },
+  {
+   "key": "landuse",
+   "value": "railway",
+   "typ": "KOLEJI",
+   "status": "verified"
+  },
+  {
+   "key": "landuse",
+   "value": "landfill",
+   "typ": "SKLADK",
+   "status": "verified"
+  },
+  {
+   "key": "landuse",
+   "value": "quarry",
+   "typ": "ULOMIS",
+   "status": "verified"
+  },
+  {
+   "key": "landuse",
+   "value": "basin",
+   "typ": "VODPLO",
+   "status": "verified"
+  },
+  {
+   "key": "landuse",
+   "value": "reservoir",
+   "typ": "VODPLO",
+   "status": "verified"
+  },
+  {
+   "key": "natural",
+   "value": "wood",
+   "typ": "LPSTROM",
+   "status": "verified"
+  },
+  {
+   "key": "natural",
+   "value": "scrub",
+   "typ": "LPKROV",
+   "status": "verified"
+  },
+  {
+   "key": "natural",
+   "value": "heath",
+   "typ": "LPKROV",
+   "status": "guess"
+  },
+  {
+   "key": "natural",
+   "value": "grassland",
+   "typ": "TRTRPO",
+   "status": "verified"
+  },
+  {
+   "key": "natural",
+   "value": "wetland",
+   "typ": "MAZCHU",
+   "status": "guess"
+  },
+  {
+   "key": "natural",
+   "value": "water",
+   "typ": "VODPLO",
+   "status": "verified"
+  },
+  {
+   "key": "leisure",
+   "value": "park",
+   "typ": "ZAHPAR",
+   "status": "verified"
+  },
+  {
+   "key": "leisure",
+   "value": "garden",
+   "typ": "ZAHPAR",
+   "status": "verified"
+  },
+  {
+   "key": "leisure",
+   "value": "playground",
+   "typ": "ZAHPAR",
+   "status": "guess"
+  },
+  {
+   "key": "leisure",
+   "value": "pitch",
+   "typ": "ZAHPAR",
+   "status": "guess"
+  },
+  {
+   "key": "leisure",
+   "value": "sports_centre",
+   "typ": "ZAHPAR",
+   "status": "guess"
+  },
+  {
+   "key": "leisure",
+   "value": "stadium",
+   "typ": "ZAHPAR",
+   "status": "guess"
+  },
+  {
+   "key": "amenity",
+   "value": "school",
+   "typ": "ARUCZA",
+   "status": "guess"
+  },
+  {
+   "key": "amenity",
+   "value": "university",
+   "typ": "ARUCZA",
+   "status": "guess"
+  },
+  {
+   "key": "amenity",
+   "value": "college",
+   "typ": "ARUCZA",
+   "status": "guess"
+  },
+  {
+   "key": "amenity",
+   "value": "hospital",
+   "typ": "ARUCZA",
+   "status": "guess"
+  },
+  {
+   "key": "amenity",
+   "value": "kindergarten",
+   "typ": "ARUCZA",
+   "status": "guess"
+  },
+  {
+   "key": "aeroway",
+   "value": "aerodrome",
+   "typ": "LETISTE",
+   "status": "verified"
+  },
+  {
+   "key": "power",
+   "value": "plant",
+   "typ": "ELEKTR",
+   "status": "verified"
+  },
+  {
+   "key": "water",
+   "value": "*",
+   "typ": "VODPLO",
+   "status": "verified"
+  },
+  {
+   "key": "waterway",
+   "value": "riverbank",
+   "typ": "VODPLO",
+   "status": "verified"
+  }
+ ]
+}
