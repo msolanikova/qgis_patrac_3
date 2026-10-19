@@ -8,7 +8,7 @@ import os
 import sys
 
 from tools.sk_data import download, extract, pipeline, qgis_project
-from tools.sk_data.config import REGIONS, SectorSize, data_root, source_dir
+from tools.sk_data.config import REGIONS, SectorSize, data_root
 from tools.sk_data.rules import guessed_rules_text
 
 
@@ -35,11 +35,17 @@ def _window(parser, value):
 
 def cmd_build(args):
     root = data_root()
-    problems, report, out_dir = pipeline.build_region(
-        args.region, root, size=_size(args), landcover_mode=args.landcover, out_dir=args.out, window=args.window)
+    try:
+        problems, report, out_dir = pipeline.build_region(
+            args.region, root, size=_size(args), landcover_mode=args.landcover, out_dir=args.out,
+            window=args.window, overwrite=args.overwrite)
+    except (FileExistsError, ValueError) as exc:
+        print("error:", exc, file=sys.stderr)
+        return 2
     print(json.dumps(report, indent=1, ensure_ascii=False))
     if problems:
         print("\nVALIDATION FAILED:", *problems, sep="\n  - ")
+        print("\noutput kept for inspection in", out_dir)
         return 1
     print("\nvalidation passed; output in", out_dir)
     return 0
@@ -80,6 +86,8 @@ def main(argv=None):
         if name == "build":
             p.add_argument("--landcover", choices=pipeline.LANDCOVER_MODES, default="osm+worldcover")
             p.add_argument("--out", help="output folder (default <data>/kraje/<region>)")
+            p.add_argument("--overwrite", action="store_true",
+                           help="replace an existing non-empty output folder, but only after the new build validates")
             p.add_argument("--window", metavar="LON,LAT", help="build only a 12 x 10 km area around this point (needs --out)")
             d = SectorSize()
             p.add_argument("--min-ha", type=float, default=d.min_ha)

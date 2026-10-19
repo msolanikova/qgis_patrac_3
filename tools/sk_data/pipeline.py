@@ -45,20 +45,65 @@ def _within(geoms, margin):
 
 
 def build_region(key, root, size=None, landcover_mode="osm+worldcover", out_dir=None, osm_pbf=None,
-                 worldcover_paths=None, region_name=None, area_tolerance=0.02, window=None):
-    """Build and validate a region. Returns (problems, report, out_dir).
+                 worldcover_paths=None, region_name=None, area_tolerance=0.02, window=None, overwrite=False):
+    """Build and validate a region. Returns (problems, report, folder).
 
     window=(lon, lat) builds only a 12 x 10 km area around that point (fast, for inspecting a place);
-    the region boundary is then not needed and no municipality list is written.
+    it needs an explicit out_dir, the region boundary is not needed and no municipality list is written.
+    The data is written to a sibling staging folder "<out_dir>.partial-*" and validated there. Only when it
+    validates is it moved to out_dir (default <root>/kraje/<key>), replacing an existing folder; then folder is
+    out_dir. When validation fails, out_dir is not touched and folder is the staging folder, kept for inspection.
+    An existing non-empty out_dir is refused (FileExistsError) unless overwrite is true.
     Every call extracts into its own temporary folder under <root>/work, so builds can run side by side.
     """
+    if landcover_mode not in LANDCOVER_MODES:
+        raise ValueError("landcover must be one of %s" % (LANDCOVER_MODES,))
+    if window and not out_dir:
+        raise ValueError("a window build needs an explicit out_dir (it must not be written to the region folder)")
+    out_dir = os.path.abspath(out_dir or region_dir(root, key))
+    if os.path.lexists(out_dir) and (not os.path.isdir(out_dir) or os.listdir(out_dir)) and not overwrite:
+        raise FileExistsError("%s already exists and is not empty; pass --overwrite to replace it "
+                              "(only after the new build validates) or choose another --out" % out_dir)
+    parent = os.path.dirname(out_dir)
+    os.makedirs(parent, exist_ok=True)
     os.makedirs(os.path.join(root, "work"), exist_ok=True)
     work = tempfile.mkdtemp(prefix=key + "-", dir=os.path.join(root, "work"))
+    staging = tempfile.mkdtemp(prefix=os.path.basename(out_dir) + ".partial-", dir=parent)
+    umask = os.umask(0)
+    os.umask(umask)
+    os.chmod(staging, 0o777 & ~umask)                 # mkdtemp makes it private; the data should look like a normal folder
     try:
-        return _build_region(key, root, work, size, landcover_mode, out_dir, osm_pbf, worldcover_paths,
-                             region_name, area_tolerance, window)
+        problems, report = _build_region(key, root, work, size, landcover_mode, staging, osm_pbf, worldcover_paths,
+                                         region_name, area_tolerance, window)
+    except BaseException:
+        shutil.rmtree(staging, ignore_errors=True)
+        raise
     finally:
         shutil.rmtree(work, ignore_errors=True)
+    if problems:
+        return problems, report, staging
+    _replace(out_dir, staging)
+    return problems, report, out_dir
+
+
+def _replace(out_dir, staging):
+    """Move the validated staging folder to out_dir; the folder that was there is removed only afterwards."""
+    old = None
+    if os.path.lexists(out_dir):
+        old = tempfile.mkdtemp(prefix=os.path.basename(out_dir) + ".old-", dir=os.path.dirname(out_dir))
+        os.rmdir(old)                                 # only to get a free sibling name
+        os.rename(out_dir, old)
+    try:
+        os.rename(staging, out_dir)
+    except BaseException:
+        if old:
+            os.rename(old, out_dir)
+        raise
+    if old:
+        if os.path.isdir(old) and not os.path.islink(old):
+            shutil.rmtree(old)
+        else:
+            os.remove(old)
 
 
 def _build_region(key, root, work, size, landcover_mode, out_dir, osm_pbf, worldcover_paths, region_name,
@@ -72,7 +117,6 @@ def _build_region(key, root, work, size, landcover_mode, out_dir, osm_pbf, world
         raise ValueError("inconsistent rules: %s" % bad)
     name = region_name or REGIONS[key]
     pbf = osm_pbf or default_osm_path(root)
-    out_dir = out_dir or region_dir(root, key)
     t0 = time.time()
 
     def step(message):
@@ -137,4 +181,4 @@ def _build_region(key, root, work, size, landcover_mode, out_dir, osm_pbf, world
     problems, report = validate(out_dir, region, size, rules.classes, area_tolerance)
     report["places"] = len(rows)
     report["seconds"] = round(time.time() - t0)
-    return problems, report, out_dir
+    return problems, report
