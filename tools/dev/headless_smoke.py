@@ -52,13 +52,36 @@ def run():
             return len(docks), len(bars)
 
         before = counts()
+        old_saver = utils.plugins["qgis_patrac"].saveProject
+        saver_active_before = old_saver.timer.isActive()
         utils.unloadPlugin("qgis_patrac")
+        try:
+            saver_active_after = old_saver.timer.isActive()
+        except RuntimeError:  # already deleted by deleteLater: certainly not firing
+            saver_active_after = False
         after_unload = counts()
         utils.loadPlugin("qgis_patrac")
         utils.startPlugin("qgis_patrac")
         after_reload = counts()
         ok = before == (1, 1) and after_unload == (0, 0) and after_reload == (1, 1)
-        return ok, "(docks, toolbars) before=%s after_unload=%s after_reload=%s" % (before, after_unload, after_reload)
+        ok = ok and saver_active_before and not saver_active_after
+        return ok, "(docks, toolbars) before=%s after_unload=%s after_reload=%s autosave timer active before=%s after unload=%s" % (
+            before, after_unload, after_reload, saver_active_before, saver_active_after)
+
+    def autosave_is_a_main_thread_timer():
+        # QgsProject.write() must not run in a worker thread: the autosave is a QObject with an active 5 minute timer.
+        from qgis.PyQt.QtCore import QCoreApplication, QObject, QThread
+        saver = utils.plugins["qgis_patrac"].saveProject
+        problems = []
+        if not isinstance(saver, QObject) or isinstance(saver, QThread):
+            problems.append("autosave object is %s" % type(saver).__mro__[:3].__repr__())
+        if not saver.timer.isActive():
+            problems.append("timer not active")
+        if saver.timer.interval() != 300000:
+            problems.append("interval %s" % saver.timer.interval())
+        if saver.timer.thread() != QCoreApplication.instance().thread():
+            problems.append("timer not in the main thread")
+        return not problems, "; ".join(problems)
 
     def non_patrac_project_is_ignored():
         # Opening any ordinary QGIS project fires on_project_change; it must not raise.
@@ -250,6 +273,7 @@ def run():
     check("plugin started without exception", start)
     check("dock widget created and showWidget() runs", dock)
     check("unload + reload leaves exactly one Patrac panel and toolbar", reload_does_not_duplicate_ui)
+    check("autosave is a main-thread QTimer (300000 ms), not a QThread", autosave_is_a_main_thread_timer)
     check("project change on a non-Patrac project does not raise", non_patrac_project_is_ignored)
     check("OpenStreetMap basemap is added as one valid layer", osm_basemap_is_added)
     check("addOsmBasemap does not add a second OpenStreetMap layer", osm_basemap_not_duplicated)

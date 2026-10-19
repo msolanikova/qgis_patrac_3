@@ -400,6 +400,8 @@ class PatracPlugin(object):
         #             subprocess.Popen(("qgis", "--profiles-path", "/home/jencek/qgis3_profiles", "--profile", "default"))
         #         except:
         #             print("CAN NOT FIND QGIS TO RELOAD")
+        self.saveProject.stop()  # otherwise the timer would fire into an unloaded plugin
+        self.saveProject.deleteLater()
         self.iface.currentLayerChanged.disconnect(self.layerChanged)
         self.iface.removePluginMenu(QCoreApplication.translate("Patrac", "Patrac"), self.actionDock)
         self.iface.removeDockWidget(self.dockWidget)

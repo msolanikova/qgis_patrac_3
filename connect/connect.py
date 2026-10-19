@@ -1,4 +1,4 @@
-from qgis.PyQt.QtCore import QThread, pyqtSignal
+from qgis.PyQt.QtCore import QFileInfo, QObject, QThread, QTimer, pyqtSignal
 import urllib.request, urllib.error, urllib.parse
 import socket, os
 import requests, json
@@ -33,22 +33,36 @@ class Database():
         except Error as e:
             print("INSERT: ", e)
 
-class SaveProject(QThread):
+class SaveProject(QObject):
+    """Saves the project every 5 minutes. Runs in the main thread (a timer), because QgsProject.write() must not
+    run while the main thread works with the layers."""
+    INTERVAL_MS = 300000
+
     def __init__(self):
         super(SaveProject, self).__init__()
+        self.timer = QTimer(self)
+        self.timer.setInterval(self.INTERVAL_MS)
+        self.timer.timeout.connect(self.save_now)
 
-    def run(self):
-        while True:
-            try:
-                project = QgsProject.instance()
-                if project is not None:
-                    prjfi = QFileInfo(project.fileName())
-                    DATAPATH = prjfi.absolutePath()
-                    if DATAPATH != "" and QFileInfo(DATAPATH + "/config/region.txt").exists():
-                        project.write()
-            except:
-                a = 100 # Only placeholder, TODO
-            self.sleep(300)
+    def start(self):
+        self.timer.start()
+
+    def stop(self):
+        self.timer.stop()
+
+    def terminate(self):
+        self.stop()
+
+    def save_now(self):
+        try:
+            project = QgsProject.instance()
+            if project is not None:
+                prjfi = QFileInfo(project.fileName())
+                DATAPATH = prjfi.absolutePath()
+                if DATAPATH != "" and QFileInfo(DATAPATH + "/config/region.txt").exists():
+                    project.write()
+        except Exception as e:
+            QgsMessageLog.logMessage("Can not save the project: " + str(e), "Patrac")
 
 class CheckRequests(QThread):
     path = ""
