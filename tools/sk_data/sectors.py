@@ -167,7 +167,9 @@ def merge_faces(faces, types, size, classes):
 
 
 def _long_axis(g):
-    xs, ys = g.minimum_rotated_rectangle.exterior.coords.xy
+    with np.errstate(divide="ignore", invalid="ignore"):   # GEOS sets floating-point flags that numpy reports as warnings
+        rectangle = g.minimum_rotated_rectangle
+    xs, ys = rectangle.exterior.coords.xy
     e1 = (xs[1] - xs[0], ys[1] - ys[0])
     e2 = (xs[2] - xs[1], ys[2] - ys[1])
     v = e1 if np.hypot(*e1) >= np.hypot(*e2) else e2

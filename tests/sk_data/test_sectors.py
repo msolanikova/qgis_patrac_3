@@ -150,6 +150,13 @@ class SplitTest(unittest.TestCase):
             n = _parts_for(ha * HA, SIZE)
             self.assertLessEqual(ha / n, SIZE.max_ha * 0.98 + 1e-9, ha)
 
+    def test_splitting_emits_no_floating_point_warnings(self):
+        import warnings
+        l_shape = Polygon([(0, 0), (900, 0), (900, 200), (300, 200), (300, 700), (0, 700)])
+        with warnings.catch_warnings():
+            warnings.simplefilter("error")   # numpy reports flags that GEOS sets inside oriented_envelope
+            split_oversized([(box(0, 0, 400, 215), "ORNAPU"), (l_shape, "OTHER"), (box(0, 0, 800, 500), "LPSTROM")], SIZE)
+
     def test_area_just_above_the_maximum_is_split(self):
         rect = box(0, 0, 400, 215)  # 8.6 ha
         parts = split_oversized([(rect, "ORNAPU")], SIZE)
