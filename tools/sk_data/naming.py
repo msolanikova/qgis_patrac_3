@@ -26,27 +26,38 @@ def letter_of(cx, cy):
     return LETTERS[(cx % 4) + 4 * (cy % 4)]
 
 
+def _keys(sectors):
+    """Sort keys (cy, cx, band, x, y, area, input index) of the sectors, from the reference point of each polygon."""
+    polygons = [g for g, _ in sectors]
+    points = shapely.get_coordinates(shapely.point_on_surface(polygons))
+    areas = shapely.area(polygons)
+    keys = []
+    for k in range(len(polygons)):
+        x, y = float(points[k][0]), float(points[k][1])
+        cx, cy = cell_of(x, y)
+        keys.append((cy, cx, math.floor(-y / BAND_M), x, y, float(areas[k]), k))
+    return keys
+
+
+def reading_order(sectors):
+    """Indices of [(Polygon, typ)] in reading order, the order of the ids: cell row from the south, cell from the west,
+    500 m band from the north, then x, y and area (identical polygons keep their input order)."""
+    keys = _keys(sectors)
+    return sorted(range(len(keys)), key=keys.__getitem__)
+
+
 def assign_ids_and_labels(sectors):
     """sectors: [(Polygon, typ)]. Returns (ids, labels), two lists of strings in the order of the input.
 
-    ids are "1".."N" in reading order (cell row from the south, cell from the west, 500 m band from the north, then x,
-    y and area); labels are the cell's letter plus a counter that restarts at 1 in every cell. The result does not
-    depend on the input order, except between identical polygons, which keep their input order.
+    ids are "1".."N" in reading order (see reading_order); labels are the cell's letter plus a counter that restarts at 1
+    in every cell. The result does not depend on the input order, except between identical polygons, which keep their
+    input order.
     """
     n = len(sectors)
     if n >= MAX_SECTORS:
         raise ValueError("%d sectors; sector ids must stay below %d, the first id the plugin gives to a split sector"
                          % (n, MAX_SECTORS))
-    if n == 0:
-        return [], []
-    polygons = [g for g, _ in sectors]
-    points = shapely.get_coordinates(shapely.point_on_surface(polygons))
-    areas = shapely.area(polygons)
-    keys = []
-    for k in range(n):
-        x, y = float(points[k][0]), float(points[k][1])
-        cx, cy = cell_of(x, y)
-        keys.append((cy, cx, math.floor(-y / BAND_M), x, y, float(areas[k]), k))
+    keys = _keys(sectors)
     order = sorted(range(n), key=keys.__getitem__)
     ids = [""] * n
     labels = [""] * n

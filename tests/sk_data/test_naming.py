@@ -114,6 +114,13 @@ class AssignTest(unittest.TestCase):
         self.assertEqual(sorted(ids), ["1", "2"])
         self.assertEqual(sorted(labels), ["A1", "A2"])
 
+    def test_reading_order_returns_the_indices_in_id_order(self):
+        sectors = [(square(12100, 100), "x"), (square(600, 100), "x"), (square(100, 100), "x"), (square(100, 12100), "x")]
+        order = naming.reading_order(sectors)
+        self.assertEqual(order, [2, 1, 0, 3])
+        ids, _ = naming.assign_ids_and_labels(sectors)
+        self.assertEqual([ids[k] for k in order], ["1", "2", "3", "4"])
+
     def test_too_many_sectors_are_refused(self):
         with mock.patch.object(naming, "MAX_SECTORS", 3):
             naming.assign_ids_and_labels([(square(i * 200, 0), "x") for i in range(2)])      # 2 < 3 fine

@@ -10,7 +10,7 @@ import numpy as np
 
 from tests.sk_data.osm_fixture import write_fixture
 from tests.sk_data.test_landcover import write_raster
-from tools.sk_data import pipeline
+from tools.sk_data import naming, pipeline
 from tools.sk_data.__main__ import main
 from tools.sk_data.config import REGIONS, SectorSize, region_dir
 from tools.sk_data.crs import wgs84_to_sjtsk
@@ -61,6 +61,8 @@ class PipelineTest(unittest.TestCase):
         sectors = gpd.read_file(path)
         n = len(sectors)
         self.assertEqual(sorted(int(i) for i in sectors["id"]), list(range(1, n + 1)))
+        order = naming.reading_order([(g, None) for g in sectors.geometry])                # ids ascend along the reading order
+        self.assertEqual([int(sectors["id"].iloc[k]) for k in order], list(range(1, n + 1)))
         self.assertTrue(all(isinstance(i, str) and re.match(r"^[1-9][0-9]*$", i) for i in sectors["id"]))
         self.assertTrue(all(isinstance(l, str) and re.match(r"^[A-Z][0-9]+$", l) for l in sectors["label"]))
         self.assertEqual(report["id_max"], n)

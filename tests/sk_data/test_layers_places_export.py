@@ -249,6 +249,32 @@ class ExportValidateTest(unittest.TestCase):
         xy = np.array([[0, 0], [29000, 0], [0, 0], [31000, 0], [100000, 100000], [1, 1]], dtype=float)
         self.assertEqual(label_conflicts(labels, xy), {"A1": 1})          # B2 is far apart, C3 is alone
 
+    def test_an_empty_sectors_file_gives_a_report_not_an_exception(self):
+        import geopandas as gpd
+        empty = gpd.GeoDataFrame({"typ": [], "id": [], "label": []}, geometry=[], crs=5514)
+        with tempfile.TemporaryDirectory() as d:
+            problems, report = self.build_frame(d, empty, box(0, 0, 600, 250))
+        self.assertIsInstance(problems, list)
+        self.assertEqual(report["labels"]["max_length"], 0)
+        self.assertEqual(report["labels"]["duplicated_labels"], 0)
+        self.assertEqual(report["id_max"], 0)
+
+    def test_empty_or_null_labels_are_a_format_problem_not_a_duplicate_label(self):
+        problems, report = self.two_sectors(distance=1000, label=[None, None])
+        text = " | ".join(problems)
+        self.assertIn("do not match", text)
+        self.assertNotIn("same label", text)
+        self.assertEqual(report["labels"]["duplicated_labels"], 0)
+        problems, _ = self.two_sectors(distance=1000, label=["", ""])
+        text = " | ".join(problems)
+        self.assertIn("do not match", text)
+        self.assertNotIn("same label", text)
+
+    def test_label_conflicts_ignores_empty_labels(self):
+        import numpy as np
+        from tools.sk_data.validate import label_conflicts
+        self.assertEqual(label_conflicts(np.array(["", ""], dtype=object), np.array([[0.0, 0.0], [1.0, 1.0]])), {})
+
     def test_missing_files_are_reported(self):
         with tempfile.TemporaryDirectory() as d:
             problems, _ = validate(d, box(0, 0, 1, 1), SectorSize(), load_rules().classes)

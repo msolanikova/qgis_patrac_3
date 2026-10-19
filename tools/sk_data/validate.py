@@ -33,7 +33,7 @@ def label_conflicts(labels, xy):
     xy = np.asarray(xy, dtype=float)
     values, inverse, counts = np.unique(labels.astype(str), return_inverse=True, return_counts=True)
     conflicts = {}
-    for k in np.flatnonzero(counts > 1):
+    for k in np.flatnonzero((counts > 1) & (values != "")):          # empty labels are a format problem, not a conflict
         points = shapely.points(xy[inverse == k])
         tree = STRtree(points)
         pairs = 0
@@ -75,6 +75,9 @@ def validate(out_dir, region, size, classes, area_tolerance=0.02):
         problems.append("%d invalid sector geometries" % invalid)
 
     _check_ids_and_labels(sectors, problems, report)
+    if len(sectors) == 0:
+        problems.append("sectors.shp has no sectors")      # the size statistics below need at least one
+        return problems, report
 
     areas = sectors.geometry.area.to_numpy()
     total = float(areas.sum())
@@ -152,8 +155,9 @@ def _check_ids_and_labels(sectors, problems, report):
         if bad.any():
             problems.append("%d labels do not match one capital letter followed by digits (examples: %s)"
                             % (int(bad.sum()), list(labels[bad].head(3))))
-        report["labels"] = {"max_length": int(labels.str.len().max()),
-                            "duplicated_labels": int((labels.value_counts() > 1).sum())}
+        named = labels[labels != ""]                                        # empty labels are already a format problem
+        report["labels"] = {"max_length": int(labels.str.len().max()) if len(labels) else 0,
+                            "duplicated_labels": int((named.value_counts() > 1).sum())}
         if report["labels"]["duplicated_labels"]:
             reference = shapely.get_coordinates(shapely.point_on_surface(sectors.geometry.values))
             conflicts = label_conflicts(labels.to_numpy(), reference)

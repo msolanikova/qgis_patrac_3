@@ -102,8 +102,11 @@ The letter comes from a grid of 12 km cells in S-JTSK (about the size of one sea
 `ABCDEFGHJKLMNPRS` (no I, O, Q), repeating every 4 cells in x and in y: any 3 x 3 block of cells has 9 different
 letters, and two cells with the same letter are at least 4 cells (36 km) apart. The number is a counter that starts at 1
 in every cell and follows the same reading order. The cell of a sector is the cell of its `point_on_surface`.
-So a search area never contains two sectors with the same label, wherever it is placed. The numbering does not depend on
-the order the sectors were produced in, only on their geometry, so a rebuild of unchanged data gives the same names.
+Within one build, any set of sectors whose reference points span less than 36 km (which covers a 12 x 10 km search
+project plus margin) has distinct labels. The numbering does not depend on the order the sectors were produced in, only
+on their geometry, so a rebuild of unchanged data gives the same names. Ids and labels are unique only within one
+build: do not mix or append sectors from different builds or windows in one project, because the counters differ. A
+rebuild with a different window or different data changes the counters.
 
 Validation reports a problem for: a missing `id` or `label` field; duplicate ids; an id that is not a positive integer
 without leading zeros or is 1,000,000 or more; a label that is not one capital letter followed by digits; and two sectors
