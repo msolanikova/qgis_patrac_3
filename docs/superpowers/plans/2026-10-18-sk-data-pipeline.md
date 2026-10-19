@@ -2495,7 +2495,7 @@ Co-Authored-By: Claude Sonnet 5.5 <noreply@anthropic.com>"
 
 **Interfaces:**
 - Consumes: everything from Tasks 1-6.
-- Produces: `pipeline.build_region(key, root, size=None, landcover_mode="osm+worldcover", out_dir=None, osm_pbf=None, worldcover_paths=None, region_name=None, area_tolerance=0.02, window=None) -> (problems, report, out_dir)` (`window=(lon, lat)` builds a 12 x 10 km area); `pipeline.LANDCOVER_MODES`; `qgis_project.init_qgis(qgis_app=None)`; `qgis_project.build_project(region_dirs, out_path, locale="en", styles_dir=STYLES_DIR) -> list[str]` (layer names); the commands `download`, `build` (with `--window LON,LAT`), `rules`, `project` of `python -m tools.sk_data`.
+- Produces: `pipeline.build_region(key, root, size=None, landcover_mode="osm+worldcover", out_dir=None, osm_pbf=None, worldcover_paths=None, region_name=None, area_tolerance=0.02, window=None) -> (problems, report, out_dir)` (`window=(lon, lat)` builds a 12 x 10 km area); `pipeline.LANDCOVER_MODES`; `qgis_project.init_qgis(qgis_app=None)`; `qgis_project.build_project(region_dirs, out_path, locale="en", styles_dir=STYLES_DIR, bookmarks=()) -> list[str]` (layer names; `bookmarks` is `[(name, lon, lat)]`), `qgis_project.TYPE_STYLE` (typ -> colour and English name, 18 entries) and `qgis_project.typ_renderer()`; the commands `download`, `build` (with `--window LON,LAT`), `rules`, `project` (with repeatable `--bookmark NAME=LON,LAT`) of `python -m tools.sk_data`.
 
 - [ ] **Step 1: Write the tests**
 
@@ -2643,7 +2643,7 @@ class QgisProjectTest(unittest.TestCase):
             app = qgis_project.init_qgis()
             try:
                 out = os.path.join(d, "p.qgz")
-                names = qgis_project.build_project([("test", out_dir)], out)
+                names = qgis_project.build_project([("test", out_dir)], out, bookmarks=[("Fixture forest", 21.205, 48.705)])
                 self.assertEqual(names[0], "OpenStreetMap")
                 self.assertIn("Sectors: test", names)
                 project = QgsProject()
@@ -2652,6 +2652,15 @@ class QgisProjectTest(unittest.TestCase):
                 self.assertEqual(len(loaded), 5)
                 self.assertTrue(all(loaded.values()), loaded)   # an invalid basemap used to vanish silently
                 self.assertFalse(project.viewSettings().defaultViewExtent().isEmpty())
+                bookmarks = project.bookmarkManager().bookmarks()
+                self.assertEqual([b.name() for b in bookmarks], ["Fixture forest"])
+                sectors = project.mapLayersByName("Sectors: test")[0]
+                renderer = sectors.renderer()
+                self.assertEqual(renderer.classAttribute(), "typ")
+                self.assertEqual({c.value() for c in renderer.categories()}, set(qgis_project.TYPE_STYLE))
+                labels = {c.value(): c.label() for c in renderer.categories()}
+                self.assertIn("Unclassified", labels["OTHER"])
+                del bookmarks, renderer, sectors
                 project.clear()
                 del project  # QGIS objects must be gone before exitQgis(), or the process crashes
             finally:
@@ -2827,6 +2836,31 @@ STYLES_DIR = Path(__file__).resolve().parents[2] / "styles"
 OSM_TILES = "type=xyz&url=https://tile.openstreetmap.org/%7Bz%7D/%7Bx%7D/%7By%7D.png&zmax=19&zmin=0"
 
 
+# typ -> (fill colour, English legend name). The plugin's own style (styles/sectors_unique_*.qml) lacks most of
+# these types (built-up, gardens, parks, cemeteries, wetland), so the inspection project uses this one.
+TYPE_STYLE = {
+    "LPSTROM": ("#1b7837", "Forest"),
+    "LPKROV": ("#7fbf7b", "Shrubs"),
+    "ORNAPU": ("#e6c15a", "Arable land"),
+    "TRTRPO": ("#b8e186", "Grassland"),
+    "SADZAH": ("#f4a582", "Orchard, garden, allotment"),
+    "VINICE": ("#c51b7d", "Vineyard"),
+    "AREZAS": ("#bdbdbd", "Built-up area"),
+    "ARUCZA": ("#7b7b7b", "Industrial, institutional"),
+    "HRBITO": ("#8c6bb1", "Cemetery"),
+    "ZAHPAR": ("#41ab5d", "Park, sports ground"),
+    "VODPLO": ("#3182bd", "Water"),
+    "KOLEJI": ("#252525", "Railway land"),
+    "MAZCHU": ("#41b6c4", "Wetland"),
+    "SKLADK": ("#a6611a", "Landfill"),
+    "ULOMIS": ("#bf812d", "Quarry"),
+    "ELEKTR": ("#e31a1c", "Power plant"),
+    "LETISTE": ("#fdae61", "Airport"),
+    "OTHER": ("#ff7f00", "Unclassified (no land-use data)"),
+}
+BOOKMARK_SIZE_M = (12000.0, 8000.0)   # width, height of the area a bookmark zooms to
+
+
 def init_qgis(qgis_app=None):
     """Start QGIS without a GUI, with the data-provider plugins loaded (needed for the web basemap)."""
     from qgis.core import QgsApplication
@@ -2838,15 +2872,26 @@ def init_qgis(qgis_app=None):
     return app
 
 
-def build_project(region_dirs, out_path, locale="en", styles_dir=STYLES_DIR):
+def typ_renderer():
+    """Categorized renderer on 'typ' with the colours and English names of TYPE_STYLE."""
+    from qgis.core import QgsCategorizedSymbolRenderer, QgsFillSymbol, QgsRendererCategory
+    categories = []
+    for typ, (colour, name) in TYPE_STYLE.items():
+        symbol = QgsFillSymbol.createSimple({"color": colour, "outline_color": "#555555", "outline_width": "0.1"})
+        categories.append(QgsRendererCategory(typ, symbol, "%s (%s)" % (name, typ)))
+    return QgsCategorizedSymbolRenderer("typ", categories)
+
+
+def build_project(region_dirs, out_path, locale="en", styles_dir=STYLES_DIR, bookmarks=()):
     """Write a .qgz with an OpenStreetMap basemap, streams, roads, forest tracks and one sectors layer per region.
 
     region_dirs: [(label, region folder)]; streams, roads and tracks come from the first folder.
+    bookmarks: [(name, lon, lat)]: spatial bookmarks (a 12 x 8 km view); the project opens on the first one.
     Returns the list of layer names written. Raises if a layer is invalid (an invalid basemap is dropped
     silently by QGIS otherwise).
     """
-    from qgis.core import (QgsCoordinateReferenceSystem, QgsCoordinateTransform, QgsProject, QgsRasterLayer,
-                           QgsReferencedRectangle, QgsVectorLayer)
+    from qgis.core import (QgsBookmark, QgsCoordinateReferenceSystem, QgsCoordinateTransform, QgsPointXY, QgsProject,
+                           QgsRasterLayer, QgsReferencedRectangle, QgsRectangle, QgsVectorLayer)
     project = QgsProject()
     project.setCrs(QgsCoordinateReferenceSystem("EPSG:3857"))
     basemap = QgsRasterLayer(OSM_TILES, "OpenStreetMap", "wms")
@@ -2862,7 +2907,9 @@ def build_project(region_dirs, out_path, locale="en", styles_dir=STYLES_DIR):
     for layer, style in entries:
         if not layer.isValid():
             raise RuntimeError("invalid layer: %s" % layer.name())
-        if style:
+        if style and style.startswith("sectors_"):
+            layer.setRenderer(typ_renderer())
+        elif style:
             layer.loadNamedStyle(str(Path(styles_dir) / style))
         project.addMapLayer(layer)
     layers = [layer for layer, _ in entries]
@@ -2871,11 +2918,22 @@ def build_project(region_dirs, out_path, locale="en", styles_dir=STYLES_DIR):
     root.setCustomLayerOrder(list(reversed(layers)))
     root.findLayer(layers[2].id()).setItemVisibilityChecked(False)       # 35,000 road lines: hidden by default
     for layer in layers[4:]:
-        layer.setOpacity(0.55)
+        layer.setOpacity(0.7)
     for layer in layers[5:]:
         root.findLayer(layer.id()).setItemVisibilityChecked(False)        # show one sectors layer at a time
     extent = QgsCoordinateTransform(layers[4].crs(), project.crs(), project).transformBoundingBox(layers[4].extent())
     extent.scale(1.05)
+    to_map = QgsCoordinateTransform(QgsCoordinateReferenceSystem("EPSG:4326"), project.crs(), project)
+    for name, lon, lat in bookmarks:
+        centre = to_map.transform(QgsPointXY(lon, lat))
+        view = QgsRectangle(centre.x() - BOOKMARK_SIZE_M[0] / 2, centre.y() - BOOKMARK_SIZE_M[1] / 2,
+                            centre.x() + BOOKMARK_SIZE_M[0] / 2, centre.y() + BOOKMARK_SIZE_M[1] / 2)
+        bookmark = QgsBookmark()
+        bookmark.setName(name)
+        bookmark.setExtent(QgsReferencedRectangle(view, project.crs()))
+        project.bookmarkManager().addBookmark(bookmark)
+        if name == bookmarks[0][0]:
+            extent = view
     project.viewSettings().setDefaultViewExtent(QgsReferencedRectangle(extent, project.crs()))
     project.viewSettings().setPresetFullExtent(QgsReferencedRectangle(extent, project.crs()))
     if not project.write(str(out_path)):
@@ -2941,7 +2999,12 @@ def cmd_rules(args):
 def cmd_project(args):
     app = qgis_project.init_qgis()
     pairs = [tuple(item.split("=", 1)) for item in args.region_dir]
-    names = qgis_project.build_project(pairs, args.out)
+    bookmarks = []
+    for item in args.bookmark or []:
+        name, _, where = item.partition("=")
+        lon, lat = (float(v) for v in where.split(","))
+        bookmarks.append((name, lon, lat))
+    names = qgis_project.build_project(pairs, args.out, bookmarks=bookmarks)
     print("wrote", args.out, "with layers:", names)
     app.exitQgis()
     return 0
@@ -2970,6 +3033,8 @@ def main(argv=None):
             p.add_argument("--max-ha", type=float, default=d.max_ha)
         if name == "project":
             p.add_argument("--region-dir", action="append", required=True, metavar="LABEL=DIR")
+            p.add_argument("--bookmark", action="append", metavar="NAME=LON,LAT",
+                           help="add a spatial bookmark; the project opens on the first one (repeatable)")
             p.add_argument("--out", required=True)
     args = parser.parse_args(argv)
     if args.command == "build" and args.window:
@@ -3061,9 +3126,14 @@ The data folder is `~/patracdata` (override with `$PATRAC_DATA`).
     --region-dir "OSM + WorldCover=$HOME/patracdata/build/ke-osm-worldcover"
 ```
 
-Open `ke-compare.qgz`. It has an OpenStreetMap basemap, the plugin's colours for the `typ` of each sector,
-and one sectors layer per build (tick one at a time). QGIS asks once which coordinate transformation to use
-for the S-JTSK layers: choose **S-JTSK to WGS 84 (4)**, the one defined for Slovakia.
+Add `--bookmark "NAME=LON,LAT"` (repeatable) to get map bookmarks; the project opens on the first one.
+
+Open `ke-compare.qgz`. It has an OpenStreetMap basemap and one sectors layer per build (tick one at a time).
+The sectors are coloured by land-use type with a complete English legend; unclassified land (`OTHER`) is bright
+orange, so the places where OSM has no land-use data stand out. The plugin's own style is not used here because
+it has no entry for most of our types (built-up, gardens, parks, cemeteries, wetland). QGIS asks once which
+coordinate transformation to use for the S-JTSK layers: choose **S-JTSK to WGS 84 (4)**, the one defined for
+Slovakia.
 
 ## What is written
 
@@ -3161,11 +3231,18 @@ If a build fails validation, read the problem list, find the cause and fix it te
 Run:
 ```bash
 source tools/dev/qgis_env.sh
-"$QGIS_PY" -m tools.sk_data project --out "$HOME/patracdata/build/ke-compare.qgz" \
-  --region-dir "OSM only=$HOME/patracdata/build/ke-osm" \
-  --region-dir "OSM + WorldCover=$HOME/patracdata/build/ke-osm-worldcover" 2>&1 | grep -v "Application path"
+B="$HOME/patracdata/build"
+"$QGIS_PY" -m tools.sk_data project --out "$B/ke-compare.qgz" \
+  --region-dir "OSM only=$B/ke-osm" --region-dir "OSM + WorldCover=$B/ke-osm-worldcover" \
+  --bookmark "1 Nálepkovo: OSM gap, satellite says forest=20.621,48.812" \
+  --bookmark "2 Slančík: OSM gap, satellite says forest=21.530,48.680" \
+  --bookmark "3 Opátka: OSM gap, satellite says forest=21.033,48.773" \
+  --bookmark "4 Lastomír: OSM gap, satellite says farmland=21.937,48.691" \
+  --bookmark "5 Remetské Hámre: OSM gap, satellite says forest=22.173,48.858" \
+  --bookmark "6 Rochovce: OSM gap, forest and meadow=20.305,48.692" \
+  --bookmark "7 Košice city: both builds similar=21.2611,48.7164" 2>&1 | grep -v "Application path"
 ```
-Expected: `wrote .../ke-compare.qgz with layers: ['OpenStreetMap', 'Streams (vodtok)', ...]`.
+Expected: `wrote .../ke-compare.qgz with layers: ['OpenStreetMap', 'Streams (vodtok)', ...]`. The six places are where the prototype's OSM-only build had 2,600-3,600 ha (of 3,600) unclassified while the satellite build said forest or farmland; they need no recomputation.
 
 - [ ] **Step 6: Record the results**
 
