@@ -1,6 +1,14 @@
 # Košický kraj build results
 
-Both builds were made with `python -m tools.sk_data build --region ke` and passed validation.
+Both builds passed validation. They were run in parallel with these commands (QGIS's Python, from the repository root):
+
+```bash
+"$QGIS_PY" -m tools.sk_data build --region ke --landcover osm --out "$HOME/patracdata/build/ke-osm"
+"$QGIS_PY" -m tools.sk_data build --region ke --landcover osm+worldcover --out "$HOME/patracdata/build/ke-osm-worldcover"
+```
+
+`~/patracdata/kraje/ke` (the folder the plugin reads) is a copy of the `ke-osm-worldcover` build: it was made with
+`cp -R` and `diff -rq` between the two folders printed nothing.
 
 | | OSM only (`--landcover osm`) | OSM + WorldCover (`--landcover osm+worldcover`) |
 |---|---|---|
@@ -16,7 +24,7 @@ Both builds were made with `python -m tools.sk_data build --region ke` and passe
 | places | 439 | 439 |
 | seconds | 382 | 1180 |
 
-The two builds ran in parallel on the same machine, so the times are slightly longer than a build run alone.
+The two builds ran in parallel on the same machine, so the times may be slightly longer than for a build run alone.
 
 ## Sectors by type, OSM + WorldCover
 
@@ -43,9 +51,12 @@ The two builds ran in parallel on the same machine, so the times are slightly lo
 
 ## Comparison with the prototype
 
-The prototype had 106,419 sectors, share_in_min_max 0.80 and other_share_of_area 0.5 for OSM only (about 6 minutes),
-and 109,978 sectors, share_in_min_max 0.748 and other_share_of_area 0.0 for OSM + WorldCover (about 20 minutes);
-these builds reproduce it (OSM only: 28 more sectors; OSM + WorldCover: identical sector count).
+The prototype (earlier runs of the same code, not repeated here) had 106,419 sectors, share_in_min_max 0.80 and
+other_share_of_area 0.5 for OSM only, and 109,978 sectors, share_in_min_max 0.748 and other_share_of_area 0.0
+for OSM + WorldCover. Its timings, about 6 and 20 minutes, are from those earlier runs.
+
+The OSM + WorldCover build has the same sector count as the prototype. The OSM-only build has 28 more sectors
+(106,447 vs 106,419) and one more tiny sector (4 vs 3). The cause was not investigated; both builds validate.
 
 ## Review
 
