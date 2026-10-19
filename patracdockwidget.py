@@ -58,6 +58,7 @@ from .main.area import Area
 from .main.utils import Utils
 from .main.sectors import Sectors
 from .main.styles import Styles
+from .main.places import read_places
 
 from os import path
 
@@ -1033,19 +1034,16 @@ class PatracDockWidget(QDockWidget, Ui_PatracDockWidget, object):
         model = DiactricFreeStringListModel()
         completer.setModel(model)
         completer.setCompletionRole(model.diactricFreeRole())
-        # sets arrays of municipalities names and coords
-        self.municipalities_names = []
-        self.municipalities_coords = []
-        self.municipalities_regions = []
-        # reads list of municipalities from CSV
-        with open(self.pluginPath + "/ui/obce_okr_kr_utf8_20180131.csv", "r") as fileInput:
-            # with open(self.pluginPath + "/ui/sk_obce_okr_kr_utf8.csv", "r") as fileInput:
-            for row in csv.reader(fileInput, delimiter=';'):
-                unicode_row = row
-                # sets the name (and province in brackets for iunique identification)
-                self.municipalities_names.append(unicode_row[3] + " (" + unicode_row[5] + ")")
-                self.municipalities_coords.append(unicode_row[0] + ";" + unicode_row[1])
-                self.municipalities_regions.append(unicode_row[6])
+        # reads the list of municipalities from <data_path>/kraje/*/places.csv
+        names, coords, regions = read_places(self.config["data_path"])
+        self.municipalities_names = names
+        self.municipalities_coords = coords
+        self.municipalities_regions = regions
+        if not names:
+            self.iface.messageBar().pushWarning(
+                "Patrac",
+                "No regions found in " + self.config["data_path"] + "kraje/. "
+                "Build one with: python -m tools.sk_data build --region ke")
         # Sets list of names to model for autocompleter
         model.setStringList(self.municipalities_names)
 
