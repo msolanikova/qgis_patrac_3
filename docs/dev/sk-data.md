@@ -36,10 +36,21 @@ Options of `build`:
 | `--landcover osm+worldcover` (default) | OSM polygons on top of the ESA WorldCover satellite classes, which fill the gaps |
 | `--landcover osm` | OSM only. About half of the countryside of Košický kraj stays `OTHER` |
 | `--out DIR` | write somewhere other than `~/patracdata/kraje/<region>` |
+| `--overwrite` | replace an existing non-empty output folder, but only after the new build validates |
 | `--window LON,LAT` | build only a 12 x 10 km area around this point (needs `--out`) |
 | `--min-ha 6 --target-ha 7 --max-ha 8` | sector size; the defaults are 60,000-80,000 m2 |
 
-The data folder is `~/patracdata` (override with `$PATRAC_DATA`).
+The data folder is `~/patracdata` (override with `$PATRAC_DATA`). Without `--out`, `build --region ke` writes to
+`~/patracdata/kraje/ke`, the folder the plugin reads. A relative `--out` is resolved against the current
+directory (the repository root), so use `$HOME/...` paths.
+
+### Existing output folders are protected
+
+A build refuses to write into an existing non-empty output folder (it stops at once with exit code 2 and tells
+you to pass `--overwrite` or choose another `--out`). The new data is always written to a sibling folder
+`<out>.partial-*` and validated there. With `--overwrite` the old folder is replaced only after the new build
+validates. When validation fails, the old folder is untouched and the new data stays in the `<out>.partial-*`
+folder for inspection (the path is printed); delete it when you no longer need it.
 
 ## Compare two builds in QGIS
 
