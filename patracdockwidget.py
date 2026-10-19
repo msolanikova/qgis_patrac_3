@@ -1035,10 +1035,15 @@ class PatracDockWidget(QDockWidget, Ui_PatracDockWidget, object):
         completer.setModel(model)
         completer.setCompletionRole(model.diactricFreeRole())
         # reads the list of municipalities from <data_path>/kraje/*/places.csv
-        names, coords, regions = read_places(self.config["data_path"])
+        problems = []
+        names, coords, regions = read_places(self.config["data_path"], problems)
         self.municipalities_names = names
         self.municipalities_coords = coords
         self.municipalities_regions = regions
+        if problems:
+            self.iface.messageBar().pushWarning(
+                "Patrac",
+                "Skipped unreadable places files: " + "; ".join(path + " (" + reason + ")" for path, reason in problems))
         if not names:
             self.iface.messageBar().pushWarning(
                 "Patrac",

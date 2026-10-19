@@ -1,5 +1,6 @@
 import os
 import tempfile
+import unicodedata
 import unittest
 
 from main.places import read_places
@@ -68,6 +69,64 @@ class ReadPlacesTest(unittest.TestCase):
         names, _, _ = read_places(self.root)
         self.assertEqual(sorted(names), sorted(["Šaľa (okres Šaľa)", "Košice (okres Košice I)"]))
         self.assertIn("Šaľa (okres Šaľa)", names)
+
+
+class ReadPlacesRobustnessTest(unittest.TestCase):
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        self.root = self._tmp.name
+
+    def path(self, region):
+        return os.path.join(self.root, "kraje", region, "places.csv")
+
+    def test_bad_files_are_skipped_and_reported_good_rows_survive(self):
+        write(self.path("ke"), "-325630;-1257190;0;Ardovo;0;okres Rožňava;KE\n")
+        os.makedirs(os.path.dirname(self.path("bad")))
+        with open(self.path("bad"), "wb") as f:
+            f.write(b"-1;-2;0;Partial;0;okres X;BAD\n\xff\xfe;;\n")
+        os.makedirs(os.path.dirname(self.path("bom")))
+        with open(self.path("bom"), "wb") as f:
+            f.write("\ufeff-262580;-1240038;0;Košice;0;okres Košice I;BOM\n".encode("utf-8"))
+        os.makedirs(self.path("dir"))  # a directory named places.csv: IsADirectoryError
+        problems = []
+        names, coords, regions = read_places(self.root, problems)
+        self.assertEqual(names, ["Ardovo (okres Rožňava)", "Košice (okres Košice I)"])
+        self.assertEqual(coords, ["-325630;-1257190", "-262580;-1240038"])  # BOM stripped
+        self.assertEqual(regions, ["KE", "BOM"])
+        self.assertEqual(sorted(p[0] for p in problems), sorted([self.path("bad"), self.path("dir")]))
+        for path, reason in problems:
+            self.assertIsInstance(reason, str)
+            self.assertTrue(reason)
+
+    def test_problems_argument_is_optional(self):
+        write(self.path("ke"), "-325630;-1257190;0;Ardovo;0;okres Rožňava;KE\n")
+        os.makedirs(self.path("dir"))
+        self.assertEqual(read_places(self.root)[0], ["Ardovo (okres Rožňava)"])
+        self.assertEqual(read_places(self.root, None)[0], ["Ardovo (okres Rožňava)"])
+
+    def test_no_problems_leaves_list_empty(self):
+        write(self.path("ke"), "-325630;-1257190;0;Ardovo;0;okres Rožňava;KE\n")
+        problems = []
+        read_places(self.root, problems)
+        self.assertEqual(problems, [])
+
+    def test_names_sort_ignoring_diacritics_and_case_with_aligned_lists(self):
+        rows = [("Šaca", "1"), ("Zvolen", "2"), ("Sečovce", "3"), ("Cejkov", "4"), ("Čaňa", "5"), ("čierna", "6"), ("Žilina", "7")]
+        write(self.path("ke"), "".join("%s;0;0;%s;0;okres X;KE\n" % (x, n) for n, x in rows))
+        names, coords, regions = read_places(self.root)
+
+        def key(name):
+            stripped = "".join(c for c in unicodedata.normalize("NFD", name) if not unicodedata.combining(c))
+            return (stripped.casefold(), name)
+
+        expected = sorted((n + " (okres X)" for n, _ in rows), key=key)
+        self.assertEqual(names, expected)
+        self.assertEqual([n.split(" ")[0] for n in names],
+                         ["Čaňa", "Cejkov", "čierna", "Šaca", "Sečovce", "Žilina", "Zvolen"])
+        by_name = {n + " (okres X)": x + ";0" for n, x in rows}
+        self.assertEqual(coords, [by_name[n] for n in names])
+        self.assertEqual(regions, ["KE"] * len(rows))
 
 
 if __name__ == "__main__":
