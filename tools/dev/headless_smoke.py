@@ -146,6 +146,75 @@ def run():
                     problems.append("%s: no category for %s" % (lang, sorted(missing)))
         return not problems, "; ".join(problems)
 
+    def sectors_by_type_button_is_wired():
+        # The "Sectors by type" (land-use) button must exist, be shown with the dock and have a click handler.
+        from qgis.PyQt.QtWidgets import QAbstractButton
+        widget = utils.plugins["qgis_patrac"].dockWidget
+        button = getattr(widget, "sectorsUniqueStyle", None)
+        if not isinstance(button, QAbstractButton):
+            return False, "dock widget has no button sectorsUniqueStyle (found %r)" % (button,)
+        problems = []
+        if button.isHidden():
+            problems.append("button is hidden by code")
+        if button.toolTip() != "Sectors by type":
+            problems.append("tooltip is %r" % button.toolTip())
+        if button.receivers(button.clicked) < 1:
+            problems.append("clicked has no receiver")
+        neighbours = ("sectorsUnitsRecommendedStyle", "sectorsUnitsStyle", "sectorsProgressStyle", "sectorsSingleStyle")
+        if any(getattr(widget, n).parentWidget() is not button.parentWidget() for n in neighbours):
+            problems.append("not in the same container as the other style buttons")
+        row = widget.horizontalLayoutStyles
+        if row.indexOf(button) < 0:
+            problems.append("not in the styles row layout")
+        return not problems, "; ".join(problems)
+
+    def sectors_by_type_handler_applies_style():
+        # setSectorsUniqueValuesStyle() on a layer found the way Styles.getSectorsLayer finds it must give a categorized
+        # renderer on "typ", with an English QGIS locale and with a Slovak one (falls back to English).
+        import shutil
+        import tempfile
+        from qgis.core import (QgsCategorizedSymbolRenderer, QgsVectorFileWriter, QgsVectorLayer)
+        from qgis.PyQt.QtCore import QSettings
+        widget = utils.plugins["qgis_patrac"].dockWidget
+        project = QgsProject.instance()
+        tmp = tempfile.mkdtemp(prefix="patrac_smoke_style_")
+        settings = QSettings()
+        saved = {k: settings.value(k) for k in ("locale/overrideFlag", "locale/userLocale")}
+        problems = []
+        try:
+            os.mkdir(os.path.join(tmp, "pracovni"))
+            shp = os.path.join(tmp, "pracovni", "sektory_group.shp")
+            memory = QgsVectorLayer("Polygon?crs=EPSG:5514&field=id:string(10)&field=label:string(10)&field=typ:string(10)",
+                                    "tmp", "memory")
+            options = QgsVectorFileWriter.SaveVectorOptions()
+            options.driverName = "ESRI Shapefile"
+            options.fileEncoding = "UTF-8"
+            QgsVectorFileWriter.writeAsVectorFormatV3(memory, shp, project.transformContext(), options)
+            project.clear()
+            project.setFileName(os.path.join(tmp, "test.qgz"))
+            layer = QgsVectorLayer(shp, "sektory_group", "ogr")
+            project.addMapLayer(layer)
+            for locale in ("en_US", "sk_SK"):
+                settings.setValue("locale/overrideFlag", True)
+                settings.setValue("locale/userLocale", locale)
+                layer.setRenderer(QgsCategorizedSymbolRenderer())  # reset to an empty categorized renderer
+                layer.renderer().setClassAttribute("x")
+                widget.setSectorsUniqueValuesStyle()
+                renderer = layer.renderer()
+                if not isinstance(renderer, QgsCategorizedSymbolRenderer):
+                    problems.append("%s: renderer is %s" % (locale, type(renderer).__name__))
+                elif renderer.classAttribute() != "typ" or len(renderer.categories()) < 20:
+                    problems.append("%s: attribute %r, %d categories" % (locale, renderer.classAttribute(), len(renderer.categories())))
+        finally:
+            for k, v in saved.items():
+                if v is None:
+                    settings.remove(k)
+                else:
+                    settings.setValue(k, v)
+            project.clear()
+            shutil.rmtree(tmp, ignore_errors=True)
+        return not problems, "; ".join(problems)
+
     def no_czech_only_buttons():
         # The CUZK map services (ZTM10, aerial) cover only the Czech Republic; their buttons must not be in the toolbar or the menu.
         plugin = utils.plugins["qgis_patrac"]
@@ -185,6 +254,8 @@ def run():
     check("OpenStreetMap basemap is added as one valid layer", osm_basemap_is_added)
     check("addOsmBasemap does not add a second OpenStreetMap layer", osm_basemap_not_duplicated)
     check("sectors land-use style loads in cs/en/uk with categories for the new types", land_use_style_loads)
+    check("'Sectors by type' button exists, is in the styles row and has a click handler", sectors_by_type_button_is_wired)
+    check("'Sectors by type' handler gives a categorized renderer on typ (en and sk locale)", sectors_by_type_handler_applies_style)
     check("toolbar and plugin menu have no Czech-only CUZK buttons", no_czech_only_buttons)
     check("config.json exists with data_path equal to PATRAC_DATA/", config)
     check("PATRAC_DATA/doc/index.html exists", doc)
