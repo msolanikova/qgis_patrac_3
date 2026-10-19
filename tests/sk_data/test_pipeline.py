@@ -12,7 +12,8 @@ from tests.sk_data.osm_fixture import write_fixture
 from tests.sk_data.test_landcover import write_raster
 from tools.sk_data import pipeline
 from tools.sk_data.__main__ import main
-from tools.sk_data.config import SectorSize
+from tools.sk_data.config import REGIONS, SectorSize, region_dir
+from tools.sk_data.crs import wgs84_to_sjtsk
 from tools.sk_data.rules import guessed_rules_text
 
 
@@ -186,6 +187,57 @@ class OutputFolderProtectionTest(unittest.TestCase):
         self.assertEqual(os.listdir(self.out), ["marker.txt"])
 
 
+def expected_places():
+    """The rows of the fixture: the village node of Testov and the city node of Testcity (S-JTSK, rounded)."""
+    to_sjtsk = wgs84_to_sjtsk().transform
+    lines = []
+    for name, lon, lat in (("Testcity", 21.215, 48.706), ("Testov", 21.205, 48.705)):
+        x, y = to_sjtsk(lon, lat)
+        lines.append("%d;%d;0;%s;0;okres Test;KE" % (round(x), round(y), name))
+    return lines
+
+
+def read_lines(path):
+    with open(path, encoding="utf-8") as f:
+        return f.read().splitlines()
+
+
+class PlacesOnlyTest(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.root = self.tmp.name
+        self.osm = write_fixture(os.path.join(self.root, "mini.osm"))
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def test_level_8_municipalities_and_level_5_cities_are_listed(self):
+        out = os.path.join(self.root, "out")
+        rows = pipeline.build_places_only("ke", self.root, out_dir=out, osm_pbf=self.osm, region_name="Test kraj")
+        self.assertEqual([r[3] for r in rows], ["Testcity", "Testov"])
+        self.assertEqual(read_lines(os.path.join(out, "places.csv")), expected_places())
+        self.assertEqual(os.listdir(out), ["places.csv"])                    # only that one file
+        self.assertEqual(os.listdir(os.path.join(self.root, "work")), [])    # the temporary folder is removed
+
+    def test_default_folder_is_the_region_folder(self):
+        pipeline.build_places_only("ke", self.root, osm_pbf=self.osm, region_name="Test kraj")
+        self.assertEqual(os.listdir(region_dir(self.root, "ke")), ["places.csv"])
+
+    def test_the_work_folder_is_removed_when_it_fails(self):
+        with self.assertRaises(ValueError):
+            pipeline.build_places_only("ke", self.root, out_dir=os.path.join(self.root, "out"), osm_pbf=self.osm,
+                                       region_name="Nowhere kraj")
+        self.assertEqual(os.listdir(os.path.join(self.root, "work")), [])
+        self.assertFalse(os.path.exists(os.path.join(self.root, "out")))
+
+    def test_full_build_lists_the_same_places(self):
+        problems, report, out_dir = pipeline.build_region("ke", self.root, landcover_mode="osm", osm_pbf=self.osm,
+                                                          region_name="Test kraj", area_tolerance=0.15)
+        self.assertEqual(problems, [])
+        self.assertEqual(report["places"], 2)
+        self.assertEqual(read_lines(os.path.join(out_dir, "places.csv")), expected_places())
+
+
 class CliTest(unittest.TestCase):
     def test_rules_command_lists_guesses(self):
         self.assertIn("natural=wetland -> MAZCHU", guessed_rules_text())
@@ -220,6 +272,32 @@ class CliTest(unittest.TestCase):
             self.assertNotIn("Traceback", err.getvalue())
             self.assertEqual(os.listdir(out), ["marker.txt"])
             self.assertEqual(os.listdir(data), [])                               # nothing created under the data folder
+
+    def test_places_command_writes_the_municipality_list(self):
+        with tempfile.TemporaryDirectory() as data, tempfile.TemporaryDirectory() as out:
+            osm = pipeline.default_osm_path(data)
+            os.makedirs(os.path.dirname(osm))
+            write_fixture(osm)
+            stdout = io.StringIO()
+            with mock.patch.dict(os.environ, {"PATRAC_DATA": data}), mock.patch.dict(REGIONS, {"ke": "Test kraj"}), \
+                    contextlib.redirect_stdout(stdout):
+                code = main(["places", "--region", "ke", "--out", out])
+            self.assertEqual(code, 0)
+            path = os.path.join(out, "places.csv")
+            self.assertEqual(stdout.getvalue().strip(), "wrote %s (2 places)" % path)
+            self.assertEqual(os.listdir(out), ["places.csv"])
+            self.assertEqual(read_lines(path), expected_places())
+            self.assertEqual(os.listdir(os.path.join(data, "work")), [])
+            self.assertFalse(os.path.exists(region_dir(data, "ke")))         # --out given: the region folder is not touched
+
+    def test_places_command_needs_a_region(self):
+        self.assertIn("--region", self.run_expecting_usage_error(["places"]))
+
+    def test_places_is_in_the_module_help(self):
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out), self.assertRaises(SystemExit):
+            main(["--help"])
+        self.assertIn("places", out.getvalue())
 
     def test_build_help_lists_overwrite(self):
         out = io.StringIO()

@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""Command line: python -m tools.sk_data <download|build|rules|project> ... (run with QGIS's Python)."""
+"""Command line: python -m tools.sk_data <download|build|places|rules|project> ... (run with QGIS's Python)."""
 
 import argparse
 import json
@@ -8,7 +8,7 @@ import os
 import sys
 
 from tools.sk_data import download, extract, pipeline, qgis_project
-from tools.sk_data.config import REGIONS, SectorSize, data_root
+from tools.sk_data.config import REGIONS, SectorSize, data_root, region_dir
 from tools.sk_data.rules import guessed_rules_text
 
 
@@ -51,6 +51,13 @@ def cmd_build(args):
     return 0
 
 
+def cmd_places(args):
+    root = data_root()
+    rows = pipeline.build_places_only(args.region, root, out_dir=args.out)
+    print("wrote %s (%d places)" % (os.path.join(os.path.abspath(args.out or region_dir(root, args.region)), "places.csv"), len(rows)))
+    return 0
+
+
 def cmd_rules(args):
     print(guessed_rules_text())
     return 0
@@ -75,12 +82,15 @@ def main(argv=None):
     sub = parser.add_subparsers(dest="command", required=True)
     for name, func, help_ in (("download", cmd_download, "download the OSM extract and WorldCover tiles"),
                               ("build", cmd_build, "build and validate a region"),
+                              ("places", cmd_places, "regenerate only the municipality list (places.csv) of a region"),
                               ("rules", cmd_rules, "list the OSM mappings that are guesses"),
                               ("project", cmd_project, "write a QGIS project to inspect built regions")):
         p = sub.add_parser(name, help=help_)
         p.set_defaults(func=func)
-        if name in ("download", "build"):
+        if name in ("download", "build", "places"):
             p.add_argument("--region", required=True, choices=sorted(REGIONS))
+        if name == "places":
+            p.add_argument("--out", help="output folder for places.csv (default <data>/kraje/<region>)")
         if name == "download":
             p.add_argument("--no-worldcover", action="store_true")
         if name == "build":

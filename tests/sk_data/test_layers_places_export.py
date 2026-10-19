@@ -83,6 +83,19 @@ class PlacesTest(unittest.TestCase):
         self.assertAlmostEqual(bezuzla[0], x, delta=600)
         self.assertAlmostEqual(bezuzla[1], y, delta=600)
 
+    def test_admin_areas_accept_several_levels(self):
+        polygons = gpd.GeoDataFrame(
+            {"tags": [{"boundary": "administrative", "admin_level": "8", "name": "Testov"},
+                      {"boundary": "administrative", "admin_level": "5", "name": "Testcity"},
+                      {"boundary": "administrative", "admin_level": "6", "name": "Okres Test"},
+                      {"boundary": "administrative", "admin_level": "9", "name": "Borough"}]},
+            geometry=[box(0, 0, 1, 1)] * 4, crs=4326)
+        self.assertEqual(places.MUNICIPALITY_LEVELS, ("8", "5"))
+        self.assertEqual(sorted(places.admin_areas(polygons, places.MUNICIPALITY_LEVELS)["name"]), ["Testcity", "Testov"])
+        self.assertEqual(sorted(places.admin_areas(polygons, ["6", "9"])["name"]), ["Borough", "Okres Test"])
+        self.assertEqual(list(places.admin_areas(polygons, "8")["name"]), ["Testov"])      # a plain string is one level
+        self.assertEqual(list(places.admin_areas(polygons, "5")["name"]), ["Testcity"])
+
     def test_admin_areas_and_csv(self):
         polygons = gpd.GeoDataFrame(
             {"tags": [{"boundary": "administrative", "admin_level": "8", "name": "Testov"},

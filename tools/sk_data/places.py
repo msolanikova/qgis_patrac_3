@@ -9,13 +9,14 @@ from shapely.strtree import STRtree
 from tools.sk_data.crs import wgs84_to_sjtsk
 
 PLACE_TYPES = {"city", "town", "village"}
-MUNICIPALITY_LEVEL = "8"
+MUNICIPALITY_LEVELS = ("8", "5")   # level 5 = the two cities with districts, Bratislava and Kosice
 DISTRICT_LEVEL = "6"
 
 
-def admin_areas(polygons, level):
-    """Name + geometry of the administrative areas of an admin_level (polygons: GeoDataFrame with 'tags')."""
-    keep = [t.get("boundary") == "administrative" and t.get("admin_level") == level and bool(t.get("name"))
+def admin_areas(polygons, levels):
+    """Name + geometry of the administrative areas of one admin_level or of several (polygons: GeoDataFrame with 'tags')."""
+    levels = {levels} if isinstance(levels, str) else set(levels)
+    keep = [t.get("boundary") == "administrative" and t.get("admin_level") in levels and bool(t.get("name"))
             for t in polygons["tags"]]
     selected = polygons[keep]
     out = selected[["geometry"]].copy()

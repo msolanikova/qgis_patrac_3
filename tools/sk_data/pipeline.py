@@ -106,6 +106,45 @@ def _replace(out_dir, staging):
             os.remove(old)
 
 
+def _region_boundary(pbf, name, work):
+    """(boundary frame, region in EPSG:4326, region in S-JTSK, padded bbox in EPSG:4326) of the region named in OSM."""
+    boundary = extract.region_boundary(pbf, name, work)
+    region_wgs = shapely.union_all(boundary.geometry.values)
+    region = shapely.make_valid(shapely.union_all(project_geometries(boundary.geometry.values)))
+    return boundary, region_wgs, region, extract.bbox_of(boundary)
+
+
+def _place_rows(polygons_wgs, points_path, region_wgs, key):
+    """Municipality list rows (see places.build_places) from the extracted OSM polygons and points."""
+    municipalities = places.admin_areas(polygons_wgs, places.MUNICIPALITY_LEVELS)
+    districts = places.admin_areas(polygons_wgs, places.DISTRICT_LEVEL)
+    points = extract.read_points(points_path)
+    return places.build_places(municipalities, districts, points, region_wgs, key)
+
+
+def build_places_only(key, root, out_dir=None, osm_pbf=None, region_name=None):
+    """Regenerate only the municipality list of a region: <out_dir>/places.csv (default the region folder).
+
+    Extracts the region into its own temporary folder under <root>/work (removed afterwards) and returns the rows.
+    Nothing else is written to out_dir.
+    """
+    name = region_name or REGIONS[key]
+    pbf = osm_pbf or default_osm_path(root)
+    out_dir = os.path.abspath(out_dir or region_dir(root, key))
+    os.makedirs(os.path.join(root, "work"), exist_ok=True)
+    work = tempfile.mkdtemp(prefix=key + "-places-", dir=os.path.join(root, "work"))
+    try:
+        _, region_wgs, _, bbox = _region_boundary(pbf, name, work)
+        paths = extract.extract(pbf, bbox, work)
+        polygons_wgs, _ = extract.read_polygons(paths["polygons"])
+        rows = _place_rows(polygons_wgs, paths["points"], region_wgs, key)
+    finally:
+        shutil.rmtree(work, ignore_errors=True)
+    os.makedirs(out_dir, exist_ok=True)
+    places.write_csv(rows, os.path.join(out_dir, "places.csv"))
+    return rows
+
+
 def _build_region(key, root, work, size, landcover_mode, out_dir, osm_pbf, worldcover_paths, region_name,
                   area_tolerance, window):
     if landcover_mode not in LANDCOVER_MODES:
@@ -129,10 +168,7 @@ def _build_region(key, root, work, size, landcover_mode, out_dir, osm_pbf, world
         bbox = Transformer.from_crs(5514, 4326, always_xy=True).transform_bounds(*margin.bounds)
         region_wgs = None
     else:
-        boundary = extract.region_boundary(pbf, name, work)
-        bbox = extract.bbox_of(boundary)
-        region_wgs = shapely.union_all(boundary.geometry.values)
-        region = shapely.make_valid(shapely.union_all(project_geometries(boundary.geometry.values)))
+        _, region_wgs, region, bbox = _region_boundary(pbf, name, work)
         margin = region.buffer(MARGIN_M)
     paths = extract.extract(pbf, bbox, work)
     step("region %s extracted" % (name if not window else "window %s,%s" % window))
@@ -160,12 +196,7 @@ def _build_region(key, root, work, size, landcover_mode, out_dir, osm_pbf, world
     step("%d sectors" % len(sectors))
 
     output = layers.output_layers(lines, sectors, region)
-    rows = []
-    if region_wgs is not None:
-        municipalities = places.admin_areas(polygons_wgs, places.MUNICIPALITY_LEVEL)
-        districts = places.admin_areas(polygons_wgs, places.DISTRICT_LEVEL)
-        points = extract.read_points(paths["points"])
-        rows = places.build_places(municipalities, districts, points, region_wgs, key)
+    rows = _place_rows(polygons_wgs, paths["points"], region_wgs, key) if region_wgs is not None else []
 
     manifest_path = os.path.join(root, "source", "sources.json")
     sources = {}
