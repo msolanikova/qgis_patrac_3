@@ -10,6 +10,17 @@
 
 **Spec:** [docs/superpowers/specs/2026-10-18-sk-data-pipeline-design.md](../specs/2026-10-18-sk-data-pipeline-design.md)
 
+## Deviations during execution (the repository code is authoritative)
+
+The code blocks below are from before the fixes made while executing the plan. Where they differ from the repository, the repository is right.
+
+- The QGIS project test runs its check in a subprocess, because an in-process `exitQgis()` made the later `tests/test_imports.py` crash with a segmentation fault (see `tests/sk_data/test_qgis_project.py`).
+- `_long_axis` in `sectors.py` wraps `minimum_rotated_rectangle` in `np.errstate` to silence spurious floating-point warnings, with a regression test (`test_sectors.py` now has 38 tests).
+- The WorldCover speckle test uses a 7 x 7 pixel block, so it fails when the sieve is disabled.
+- Task 9 ran both builds in parallel, wrote the comparison project to `ke-compare-repo.qgz`, and installed `~/patracdata/kraje/ke` by copying the validated OSM + WorldCover build.
+- The full suite is 97 tests plus the new ones from the final fix wave.
+- The final review added the overwrite protection: builds stage into a sibling folder, validate there, then replace the output folder; `--overwrite` is required to replace a non-empty folder.
+
 ## Global Constraints
 
 - Work only on branch `feature/sk-data-pipeline`. Never commit to `master`. Never push or merge.
