@@ -75,11 +75,29 @@ def run():
             return False, "missing " + config_path
         with open(config_path, encoding="utf-8") as f:
             data_path = json.load(f).get("data_path", "")
-        return data_path.endswith("/patracdata/"), "data_path=%s" % data_path
+        expected = os.environ["PATRAC_DATA"] + "/"
+        return data_path == expected, "data_path=%s expected=%s" % (data_path, expected)
 
     def doc():
-        p = os.path.join(os.path.expanduser("~"), "patracdata", "doc", "index.html")
+        p = os.path.join(os.environ["PATRAC_DATA"], "doc", "index.html")
         return os.path.isfile(p), p
+
+    def municipalities_come_from_region_folders():
+        widget = utils.plugins["qgis_patrac"].dockWidget
+        names, regions = widget.municipalities_names, widget.municipalities_regions
+        ok = names == ["Ardovo (okres Rožňava)", "Košice (okres Košice I)"] and regions == ["XX", "XX"]
+        return ok, "names=%s regions=%s" % (names, regions)
+
+    def osm_basemap_is_added():
+        project = QgsProject.instance()
+        project.clear()
+        try:
+            utils.plugins["qgis_patrac"].dockWidget.Utils.addOsmBasemap()
+            layers = list(project.mapLayers().values())
+            ok = len(layers) == 1 and layers[0].name() == "OpenStreetMap" and layers[0].isValid()
+            return ok, "layers=%s" % [(l.name(), l.isValid()) for l in layers]
+        finally:
+            project.clear()
 
     def transform():
         src = QgsCoordinateReferenceSystem("EPSG:4326")
@@ -106,8 +124,10 @@ def run():
     check("dock widget created and showWidget() runs", dock)
     check("unload + reload leaves exactly one Patrac panel and toolbar", reload_does_not_duplicate_ui)
     check("project change on a non-Patrac project does not raise", non_patrac_project_is_ignored)
-    check("config.json exists with data_path ending /patracdata/", config)
-    check("~/patracdata/doc/index.html exists", doc)
+    check("OpenStreetMap basemap is added as one valid layer", osm_basemap_is_added)
+    check("config.json exists with data_path equal to PATRAC_DATA/", config)
+    check("PATRAC_DATA/doc/index.html exists", doc)
+    check("municipality list comes from PATRAC_DATA/kraje/*/places.csv", municipalities_come_from_region_folders)
     check("EPSG:4326 -> EPSG:5514 transform (Kosice)", transform)
     check("debugpy.listen on a free 127.0.0.1 port", debugpy_listen)
 
