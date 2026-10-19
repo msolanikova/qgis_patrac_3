@@ -3,8 +3,9 @@
 
 The letter comes from a 12 km grid in S-JTSK, 16 letters repeating every 4 cells in x and y, so any 3 x 3 block of cells
 has 9 different letters and two cells with the same letter are at least 4 cells (more than 36 km) apart. The number
-counts the sectors inside one cell, north to south in bands of 500 m and west to east inside a band. A search area
-(about 12 x 10 km) therefore never has two sectors with the same label. Pure Python and shapely, no file access.
+counts the sectors inside one cell, north to south in bands of 500 m and west to east inside a band. Within one build,
+sectors whose reference points span less than 36 km (a 12 x 10 km search project plus margin) therefore have distinct
+labels. Pure Python and shapely, no file access.
 """
 
 import math

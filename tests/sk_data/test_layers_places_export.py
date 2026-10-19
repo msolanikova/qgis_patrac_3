@@ -132,9 +132,11 @@ class ExportValidateTest(unittest.TestCase):
         with self.assertRaises(ValueError):
             export.sectors_frame([(box(0, 0, 1, 1).union(box(5, 5, 6, 6)), "A")])
 
-    def test_sectors_frame_adds_string_id_and_label_after_typ(self):
+    def test_sectors_frame_has_string_id_label_typ_in_the_order_the_plugin_reads(self):
         frame = export.sectors_frame([(box(0, 0, 300, 250), "LPSTROM"), (box(300, 0, 600, 250), "ORNAPU")])
-        self.assertEqual(list(frame.columns), ["typ", "id", "label", "geometry"])
+        # The plugin writes and reads sector attributes by position (id, label, typ, stav, ...): the merge in
+        # patracdockwidget.py, split by grid in main/utils.py and ui/ui_sector.py (attributes()[1] is the name).
+        self.assertEqual(list(frame.columns), ["id", "label", "typ", "geometry"])
         self.assertEqual(sorted(frame["id"]), ["1", "2"])
         self.assertEqual(list(frame["label"]), ["A1", "A2"])         # west to east inside one cell and one band
         self.assertEqual(list(frame["id"]), ["1", "2"])
@@ -250,7 +252,6 @@ class ExportValidateTest(unittest.TestCase):
         self.assertEqual(label_conflicts(labels, xy), {"A1": 1})          # B2 is far apart, C3 is alone
 
     def test_an_empty_sectors_file_gives_a_report_not_an_exception(self):
-        import geopandas as gpd
         empty = gpd.GeoDataFrame({"typ": [], "id": [], "label": []}, geometry=[], crs=5514)
         with tempfile.TemporaryDirectory() as d:
             problems, report = self.build_frame(d, empty, box(0, 0, 600, 250))

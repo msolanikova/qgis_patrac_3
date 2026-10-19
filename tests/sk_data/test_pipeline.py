@@ -55,7 +55,11 @@ class PipelineTest(unittest.TestCase):
         dataset = ogr.Open(path)
         definition = dataset.GetLayer(0).GetLayerDefn()
         types = {definition.GetFieldDefn(i).GetName(): definition.GetFieldDefn(i).GetType() for i in range(definition.GetFieldCount())}
+        names = [definition.GetFieldDefn(i).GetName() for i in range(definition.GetFieldCount())]
         definition = dataset = None
+        # The plugin writes and reads sector attributes by position (id, label, typ, stav, ...): the merge in
+        # patracdockwidget.py, split by grid in main/utils.py and ui/ui_sector.py (attributes()[1] is the name).
+        self.assertEqual(names[:3], ["id", "label", "typ"])
         self.assertEqual(types["id"], ogr.OFTString)
         self.assertEqual(types["label"], ogr.OFTString)
         sectors = gpd.read_file(path)

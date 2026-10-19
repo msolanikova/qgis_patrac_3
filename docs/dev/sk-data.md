@@ -91,7 +91,11 @@ Košice and Bratislava, which OSM maps as `admin_level=5`.
 
 ## Sector names
 
-Every sector in `sectors.shp` has two string fields the plugin needs (`tools/sk_data/naming.py`):
+Every sector in `sectors.shp` has two string fields the plugin needs (`tools/sk_data/naming.py`). The fields are
+written in the order `id`, `label`, `typ`: the plugin reads and writes sector attributes by position (`id, label, typ,
+stav, prostredky, area_ha, ...`, for example when merging sectors, splitting by grid and in the sector dialog), so another
+order would put the type into the id and the id into the label. `tests/test_sector_field_order.py` checks the order
+against the plugin source.
 
 - `id`: `"1"` to `"N"`, unique in the file, numbered in reading order (cell row from the south, cell from the west,
   then 500 m bands from the north, west to east inside a band). The plugin gives sectors created by splitting ids from
@@ -106,7 +110,8 @@ Within one build, any set of sectors whose reference points span less than 36 km
 project plus margin) has distinct labels. The numbering does not depend on the order the sectors were produced in, only
 on their geometry, so a rebuild of unchanged data gives the same names. Ids and labels are unique only within one
 build: do not mix or append sectors from different builds or windows in one project, because the counters differ. A
-rebuild with a different window or different data changes the counters.
+rebuild with a different window or different data changes the counters. The plugin's "extend area" function can grow a
+project beyond 36 km, where repeated labels can occur.
 
 Validation reports a problem for: a missing `id` or `label` field; duplicate ids; an id that is not a positive integer
 without leading zeros or is 1,000,000 or more; a label that is not one capital letter followed by digits; and two sectors

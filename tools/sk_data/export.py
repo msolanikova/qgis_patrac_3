@@ -25,15 +25,16 @@ Share-alike: publishing this derived data requires ODbL handling. Keep this noti
 
 
 def sectors_frame(sectors):
-    """GeoDataFrame (EPSG:5514) with the string fields 'typ', 'id' and 'label' from [(Polygon, typ)].
+    """GeoDataFrame (EPSG:5514) with the string fields 'id', 'label' and 'typ' from [(Polygon, typ)].
 
     Every geometry must be a valid Polygon. id and label (see naming.py) are what the plugin needs for filters and names.
+    The order matters: the plugin reads and writes sector attributes by position (id, label, typ, then the fields it adds).
     """
     broken = sum(1 for g, _ in sectors if g.geom_type != "Polygon" or not g.is_valid)
     if broken:
         raise ValueError("%d sectors are not valid single polygons" % broken)
     ids, labels = assign_ids_and_labels(sectors)
-    return gpd.GeoDataFrame({"typ": [t for _, t in sectors], "id": ids, "label": labels},
+    return gpd.GeoDataFrame({"id": ids, "label": labels, "typ": [t for _, t in sectors]},
                             geometry=[g for g, _ in sectors], crs=5514)
 
 
