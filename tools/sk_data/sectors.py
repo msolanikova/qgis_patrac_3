@@ -300,5 +300,5 @@ def build_sectors(barrier_lines, boundary_lines, margin, region, osm_cover, base
     merged = merge_faces(faces, types, size, classes)
     log.info("sectors after merge: %d", len(merged))
     sectors = finalize_sectors(absorb_fragments(split_oversized(merged, size), size))
-    log.info("sectors after split: %d", len(sectors))
+    log.info("sectors after split and cleanup: %d", len(sectors))
     return select_inside(sectors, region)

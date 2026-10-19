@@ -1,7 +1,6 @@
 import unittest
 
 import geopandas as gpd
-import shapely
 from shapely.geometry import LineString, Polygon, box
 from shapely.ops import unary_union
 

@@ -30,7 +30,7 @@ TYPE_STYLE = {
     "LETISTE": ("#fdae61", "Airport"),
     "OTHER": ("#ff7f00", "Unclassified (no land-use data)"),
 }
-BOOKMARK_SIZE_M = (12000.0, 8000.0)   # width, height of the area a bookmark zooms to
+BOOKMARK_SIZE_M = (12000.0, 8000.0)   # width, height in EPSG:3857 map units (about 7.9 x 5.3 km on the ground at 48.7 N)
 
 
 def init_qgis(qgis_app=None):
@@ -58,7 +58,8 @@ def build_project(region_dirs, out_path, locale="en", styles_dir=STYLES_DIR, boo
     """Write a .qgz with an OpenStreetMap basemap, streams, roads, forest tracks and one sectors layer per region.
 
     region_dirs: [(label, region folder)]; streams, roads and tracks come from the first folder.
-    bookmarks: [(name, lon, lat)]: spatial bookmarks (a 12 x 8 km view); the project opens on the first one.
+    bookmarks: [(name, lon, lat)]: spatial bookmarks (a view of 12000 x 8000 EPSG:3857 map units, about
+    7.9 x 5.3 km on the ground at 48.7 N); the project opens on the first one.
     Returns the list of layer names written. Raises if a layer is invalid (an invalid basemap is dropped
     silently by QGIS otherwise).
     """
@@ -88,7 +89,7 @@ def build_project(region_dirs, out_path, locale="en", styles_dir=STYLES_DIR, boo
     root = project.layerTreeRoot()
     root.setHasCustomLayerOrder(True)
     root.setCustomLayerOrder(list(reversed(layers)))
-    root.findLayer(layers[2].id()).setItemVisibilityChecked(False)       # 35,000 road lines: hidden by default
+    root.findLayer(layers[2].id()).setItemVisibilityChecked(False)       # about 100,000 road lines for the whole kraj: hidden by default
     for layer in layers[4:]:
         layer.setOpacity(0.7)
     for layer in layers[5:]:
