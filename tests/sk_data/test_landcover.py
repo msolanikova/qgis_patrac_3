@@ -41,7 +41,7 @@ class WorldCoverTest(unittest.TestCase):
     def test_classes_become_typed_polygons_and_speckles_are_removed(self):
         array = np.full((60, 100), 10, dtype=np.uint8)   # trees
         array[:, 50:] = 40                                # cropland on the right half
-        array[10:13, 10:13] = 30                          # a 3 x 3 pixel grass speckle inside the trees
+        array[10:17, 10:17] = 30                          # a 7 x 7 pixel grass speckle (about 4000 m2: above min_cover_m2, below the sieve threshold)
         with tempfile.TemporaryDirectory() as d:
             tif = os.path.join(d, "wc.tif")
             write_raster(tif, array)
