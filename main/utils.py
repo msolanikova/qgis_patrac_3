@@ -42,6 +42,9 @@ from os import path
 
 from datetime import datetime
 
+OSM_TILES_URI = "type=xyz&url=https://tile.openstreetmap.org/%7Bz%7D/%7Bx%7D/%7By%7D.png&zmax=19&zmin=0"
+
+
 class CreateGridTask():
     def __init__(self, widget, parent, params):
         # super().__init__("Create Grid Task", QgsTask.CanCancel)
@@ -353,6 +356,14 @@ class Utils(object):
         root = QgsProject.instance().layerTreeRoot()
         QgsProject.instance().addMapLayer(raster, False)
         root.insertLayer(len(root.children()) + 1, raster)
+
+    def addOsmBasemap(self):
+        """Adds the OpenStreetMap tile layer as a basemap."""
+        raster = QgsRasterLayer(OSM_TILES_URI, "OpenStreetMap", "wms")
+        if not raster.isValid():
+            QgsMessageLog.logMessage("Could not load the OpenStreetMap layer", "Patrac")
+            return
+        self.addWMSLayer(OSM_TILES_URI, "OpenStreetMap")
 
     def addVectorLayer(self, path, label, crs_code):
         """Adds raster layer to map"""
