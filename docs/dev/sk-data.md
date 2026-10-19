@@ -5,6 +5,11 @@ tracks, streams and a municipality list) from open data. It runs with QGIS's bun
 
 Design: [docs/superpowers/specs/2026-10-18-sk-data-pipeline-design.md](../superpowers/specs/2026-10-18-sk-data-pipeline-design.md).
 
+## Before you start
+
+QGIS 3 LTR must be installed and the environment set up as described in `docs/dev/macos-setup.md`. Run every
+command from the repository root. `download` needs an internet connection and about 550 MB of disk space.
+
 ## Run it
 
 ```bash
@@ -22,7 +27,7 @@ To look at a single place first, build only a 12 x 10 km window around a point (
 "$QGIS_PY" -m tools.sk_data build --region ke --window 21.2611,48.7164 --out "$HOME/patracdata/build/ke-kosice-window"
 ```
 
-A window has no municipality list and must be written to its own `--out` folder.
+A window has no municipality list (it writes an empty `places.csv`) and must be written to its own `--out` folder.
 
 Options of `build`:
 
@@ -80,14 +85,15 @@ mapped types or `OTHER` here.
 
 ## How a sector is made
 
-1. Main roads, railways, rivers/streams/canals and the edges of land-cover polygons are drawn together
+1. Roads (every class from motorway down to residential streets), railways, rivers/streams/canals and the edges of land-cover polygons are drawn together
    and polygonized into small faces.
 2. Each face gets a type: the smallest OSM polygon containing it, else the WorldCover class, else `OTHER`
-   (faces with at least 8% buildings become `AREZAS`).
+   (faces that would otherwise be `OTHER` and have at least 8% buildings become `AREZAS`).
 3. Faces smaller than the minimum merge with the neighbour of the same plugin class that shares the
    longest border. Tiny faces (< 1 ha) and thin slivers merge into any neighbour.
 4. Areas above the maximum are cut into near-equal parts along their long axis.
-5. Fragments smaller than 1 ha (left by the cutting) join the neighbour they share the longest border with.
+5. Fragments smaller than 1 ha (left by the cutting) join the neighbour they share the longest border with
+   (or the smallest touching neighbour if that would push the sector above the maximum).
    That can push a sector slightly above the maximum, by less than 1 ha; validation allows that and
    reports how many sectors are over the maximum.
 
