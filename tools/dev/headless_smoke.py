@@ -125,6 +125,27 @@ def run():
         finally:
             project.clear()
 
+    def land_use_style_loads():
+        # The "sectors by land use" style must load on a sectors-like layer and know the land-use types of the Slovak pipeline.
+        from qgis.core import QgsCategorizedSymbolRenderer, QgsVectorLayer
+        import sys
+        styles = os.path.join(os.path.dirname(sys.modules["qgis_patrac"].__file__), "styles")  # the repo, through the plugin symlink
+        wanted = {"AREZAS", "ARUCZA", "HRBITO", "ZAHPAR", "SADZAH", "MAZCHU"}
+        problems = []
+        for lang in ("cs", "en", "uk"):
+            layer = QgsVectorLayer("Polygon?crs=EPSG:5514&field=typ:string(10)", "sectors", "memory")
+            message, ok = layer.loadNamedStyle(os.path.join(styles, "sectors_unique_%s.qml" % lang))
+            renderer = layer.renderer()
+            if not ok:
+                problems.append("%s: loadNamedStyle failed: %s" % (lang, message))
+            elif not isinstance(renderer, QgsCategorizedSymbolRenderer):
+                problems.append("%s: renderer is %s" % (lang, type(renderer).__name__))
+            else:
+                missing = wanted - {c.value() for c in renderer.categories()}
+                if missing:
+                    problems.append("%s: no category for %s" % (lang, sorted(missing)))
+        return not problems, "; ".join(problems)
+
     def transform():
         src = QgsCoordinateReferenceSystem("EPSG:4326")
         dst = QgsCoordinateReferenceSystem("EPSG:5514")
@@ -152,6 +173,7 @@ def run():
     check("project change on a non-Patrac project does not raise", non_patrac_project_is_ignored)
     check("OpenStreetMap basemap is added as one valid layer", osm_basemap_is_added)
     check("addOsmBasemap does not add a second OpenStreetMap layer", osm_basemap_not_duplicated)
+    check("sectors land-use style loads in cs/en/uk with categories for the new types", land_use_style_loads)
     check("config.json exists with data_path equal to PATRAC_DATA/", config)
     check("PATRAC_DATA/doc/index.html exists", doc)
     check("municipality list comes from PATRAC_DATA/kraje/*/places.csv", municipalities_come_from_region_folders)
