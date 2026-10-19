@@ -146,6 +146,17 @@ def run():
                     problems.append("%s: no category for %s" % (lang, sorted(missing)))
         return not problems, "; ".join(problems)
 
+    def no_czech_only_buttons():
+        # The CUZK map services (ZTM10, aerial) cover only the Czech Republic; their buttons must not be in the toolbar or the menu.
+        plugin = utils.plugins["qgis_patrac"]
+        menu = [a for m in utils.iface.pluginMenu().actions() if m.menu() and m.menu().title().replace("&", "") == "Patrac"
+                for a in m.menu().actions()]
+        toolbar = list(plugin.toolbar.actions())
+        texts = lambda actions: [(a.text(), a.toolTip(), a.objectName()) for a in actions]
+        bad = [t for t in texts(toolbar) + texts(menu) if any("CUZK" in x.upper() or "ZTM10" in x.upper() for x in t)]
+        ok = not bad and len(toolbar) > 5 and len(menu) == 1  # the menu keeps its one "show/hide panel" action
+        return ok, "toolbar actions=%d menu actions=%d czech-only=%s" % (len(toolbar), len(menu), bad)
+
     def transform():
         src = QgsCoordinateReferenceSystem("EPSG:4326")
         dst = QgsCoordinateReferenceSystem("EPSG:5514")
@@ -174,6 +185,7 @@ def run():
     check("OpenStreetMap basemap is added as one valid layer", osm_basemap_is_added)
     check("addOsmBasemap does not add a second OpenStreetMap layer", osm_basemap_not_duplicated)
     check("sectors land-use style loads in cs/en/uk with categories for the new types", land_use_style_loads)
+    check("toolbar and plugin menu have no Czech-only CUZK buttons", no_czech_only_buttons)
     check("config.json exists with data_path equal to PATRAC_DATA/", config)
     check("PATRAC_DATA/doc/index.html exists", doc)
     check("municipality list comes from PATRAC_DATA/kraje/*/places.csv", municipalities_come_from_region_folders)

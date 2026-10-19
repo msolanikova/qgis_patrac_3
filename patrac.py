@@ -278,8 +278,8 @@ class PatracPlugin(object):
         self.toolbar.addAction(self.iface.actionVertexToolActiveLayer())
         self.addSplitByGridButton()
         self.addPrintMapButton()
-        self.addAddZTM10Button()
-        self.addAddAerialCUZKButton()
+        # The ZTM10 and CUZK aerial buttons are not added: those services cover only the Czech Republic.
+        # addAddZTM10Button() and addAddAerialCUZKButton() are kept for a possible later reuse.
         self.addLanguageSelection()
 
     def addRecalculateButton(self):
