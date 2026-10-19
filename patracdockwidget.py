@@ -59,6 +59,7 @@ from .main.utils import Utils
 from .main.sectors import Sectors
 from .main.styles import Styles
 from .main.places import read_places
+from .main.progress import set_progress
 
 from os import path
 
@@ -1258,14 +1259,14 @@ class PatracDockWidget(QDockWidget, Ui_PatracDockWidget, object):
     def appendTask(self, task):
         # create the task and connect its signals
         self.tasks.append(task)
-        self.tasks[len(self.tasks) - 1].progressChanged.connect(self.progress_bar.setValue)
+        self.tasks[len(self.tasks) - 1].progressChanged.connect(lambda value: set_progress(self.progress_bar, value))
 
     def runTask(self, id):
         # start the task
         QgsApplication.taskManager().addTask(self.tasks[id])
 
     def setProgress(self, value):
-        self.progress_bar.setValue(value)
+        set_progress(self.progress_bar, value)
 
     def createProgressBar(self, message):
         # Create a progress bar in the QGIS message bar
@@ -1295,7 +1296,7 @@ class PatracDockWidget(QDockWidget, Ui_PatracDockWidget, object):
 
         # create the task and connect its signals
         self.task = TestTask()
-        self.task.progressChanged.connect(self.progress_bar.setValue)
+        self.task.progressChanged.connect(lambda value: set_progress(self.progress_bar, value))
         self.task.taskCompleted.connect(self.iface.messageBar().clearWidgets)
 
         # start the task and close the dialog
