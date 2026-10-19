@@ -99,6 +99,32 @@ def run():
         finally:
             project.clear()
 
+    def osm_basemap_not_duplicated():
+        # A second call, or a project that already has an OSM layer (the template's "OSM Standard"), must not add another one.
+        from qgis.core import QgsRasterLayer
+        project = QgsProject.instance()
+        project.clear()
+        utils_obj = utils.plugins["qgis_patrac"].dockWidget.Utils
+
+        def osm_layers():
+            return [l for l in project.mapLayers().values() if "tile.openstreetmap.org" in l.source()]
+
+        try:
+            utils_obj.addOsmBasemap()
+            first = [l.name() for l in osm_layers()]
+            utils_obj.addOsmBasemap()
+            second = [l.name() for l in osm_layers()]
+            project.clear()
+            template_osm = QgsRasterLayer(
+                "type=xyz&url=http://tile.openstreetmap.org/%7Bz%7D/%7Bx%7D/%7By%7D.png&zmax=19&zmin=0", "OSM Standard", "wms")
+            project.addMapLayer(template_osm)
+            utils_obj.addOsmBasemap()
+            names = [l.name() for l in project.mapLayers().values()]
+            ok = len(first) == 1 and len(second) == 1 and "OpenStreetMap" not in names
+            return ok, "after 1st call=%s after 2nd call=%s with template layer=%s" % (first, second, names)
+        finally:
+            project.clear()
+
     def transform():
         src = QgsCoordinateReferenceSystem("EPSG:4326")
         dst = QgsCoordinateReferenceSystem("EPSG:5514")
@@ -125,6 +151,7 @@ def run():
     check("unload + reload leaves exactly one Patrac panel and toolbar", reload_does_not_duplicate_ui)
     check("project change on a non-Patrac project does not raise", non_patrac_project_is_ignored)
     check("OpenStreetMap basemap is added as one valid layer", osm_basemap_is_added)
+    check("addOsmBasemap does not add a second OpenStreetMap layer", osm_basemap_not_duplicated)
     check("config.json exists with data_path equal to PATRAC_DATA/", config)
     check("PATRAC_DATA/doc/index.html exists", doc)
     check("municipality list comes from PATRAC_DATA/kraje/*/places.csv", municipalities_come_from_region_folders)

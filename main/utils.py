@@ -358,7 +358,11 @@ class Utils(object):
         root.insertLayer(len(root.children()) + 1, raster)
 
     def addOsmBasemap(self):
-        """Adds the OpenStreetMap tile layer as a basemap."""
+        """Adds the OpenStreetMap tile layer as a basemap, unless the project already has one (the project template has "OSM Standard")."""
+        for layer in QgsProject.instance().mapLayers().values():
+            if "tile.openstreetmap.org" in layer.source():
+                QgsMessageLog.logMessage("The project already has an OpenStreetMap layer (" + layer.name() + "), not adding another one", "Patrac")
+                return
         raster = QgsRasterLayer(OSM_TILES_URI, "OpenStreetMap", "wms")
         if not raster.isValid():
             QgsMessageLog.logMessage("Could not load the OpenStreetMap layer", "Patrac")
