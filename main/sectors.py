@@ -1133,6 +1133,8 @@ class Sectors(object):
         # prepare all sectors to one file
         self.Utils.copyLayer(DATAPATH, "all")
         layerLines = QgsVectorLayer(DATAPATH + "/sektory/shp/all.shp", "sektory linie", "ogr")
+        # The copy of the template has no .prj, without this all.gpx would contain S-JTSK metres as lat/lon
+        layerLines.setCrs(QgsCoordinateReferenceSystem("EPSG:5514"))
         providerLayerLines = layerLines.dataProvider()
         layerLines.startEditing()
         fList = list()
