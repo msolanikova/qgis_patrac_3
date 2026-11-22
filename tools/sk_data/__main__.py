@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""Command line: python -m tools.sk_data <download|build|places|rules|project> ... (run with QGIS's Python)."""
+"""Command line: python -m tools.sk_data <download|build|places|rules|project|service-bundle> ... (run with QGIS's Python)."""
 
 import argparse
 import json
@@ -7,7 +7,7 @@ import logging
 import os
 import sys
 
-from tools.sk_data import download, extract, pipeline, qgis_project
+from tools.sk_data import download, extract, pipeline, qgis_project, service_bundle
 from tools.sk_data.config import REGIONS, SectorSize, data_root, region_dir
 from tools.sk_data.rules import guessed_rules_text
 
@@ -77,6 +77,19 @@ def cmd_project(args):
     return 0
 
 
+def cmd_service_bundle(args):
+    root = data_root()
+    out = args.out or os.path.join(root, "service-bundles")
+    try:
+        manifest = service_bundle.bundle_region(root, args.region, args.version, out, overwrite=args.overwrite)
+    except (FileExistsError, ValueError) as exc:
+        print("error:", exc, file=sys.stderr)
+        return 2
+    print("wrote %s (%d sectors in %d tiles)" % (os.path.join(os.path.abspath(out), args.region, args.version),
+                                                 manifest["sector_count"], len(manifest["tiles"])))
+    return 0
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(prog="python -m tools.sk_data", description=__doc__)
     sub = parser.add_subparsers(dest="command", required=True)
@@ -84,10 +97,11 @@ def main(argv=None):
                               ("build", cmd_build, "build and validate a region"),
                               ("places", cmd_places, "regenerate only the municipality list (places.csv) of a region"),
                               ("rules", cmd_rules, "list the OSM mappings that are guesses"),
-                              ("project", cmd_project, "write a QGIS project to inspect built regions")):
+                              ("project", cmd_project, "write a QGIS project to inspect built regions"),
+                              ("service-bundle", cmd_service_bundle, "cut the sectors of a built region into the tiled bundle of the SAR Planner")):
         p = sub.add_parser(name, help=help_)
         p.set_defaults(func=func)
-        if name in ("download", "build", "places"):
+        if name in ("download", "build", "places", "service-bundle"):
             p.add_argument("--region", required=True, choices=sorted(REGIONS))
         if name == "places":
             p.add_argument("--out", help="output folder for places.csv (default <data>/kraje/<region>)")
@@ -103,6 +117,10 @@ def main(argv=None):
             p.add_argument("--min-ha", type=float, default=d.min_ha)
             p.add_argument("--target-ha", type=float, default=d.target_ha)
             p.add_argument("--max-ha", type=float, default=d.max_ha)
+        if name == "service-bundle":
+            p.add_argument("--version", required=True, help="name of the bundle version, for example 2026-11-22")
+            p.add_argument("--out", help="bundle root (default <data>/service-bundles); writes <out>/<region>/<version>/")
+            p.add_argument("--overwrite", action="store_true", help="replace an existing version folder after the new one is complete")
         if name == "project":
             p.add_argument("--region-dir", action="append", required=True, metavar="LABEL=DIR")
             p.add_argument("--bookmark", action="append", metavar="NAME=LON,LAT",
