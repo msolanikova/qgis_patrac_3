@@ -6,6 +6,7 @@ import unittest
 from unittest import mock
 
 import geopandas as gpd
+import shapely
 from shapely.geometry import MultiPolygon, Polygon, box
 from shapely.wkt import loads as load_wkt
 
@@ -125,6 +126,29 @@ class WriteBundleTest(unittest.TestCase):
         record = read_tile(os.path.join(self.out, "ke", "round"), "-27_-124")[0]
         self.assertIn("-262580.12 -1240038.99", record["wkt"])
         self.assertNotIn("123456", record["wkt"])
+
+    def wkt_of_single_sector(self, geometry):
+        gdf = gpd.GeoDataFrame({"id": ["7"], "label": ["X"], "typ": ["OTHER"]}, geometry=[geometry], crs=5514)
+        service_bundle.write_bundle(gdf, self.out, "ke", "single", CLASSES, "a", SOURCES)
+        (key,) = os.listdir(os.path.join(self.out, "ke", "single", "tiles"))
+        return read_tile(os.path.join(self.out, "ke", "single"), key.replace(".jsonl.gz", ""))[0]["wkt"]
+
+    def test_rounding_to_centimetres_keeps_the_polygon_valid(self):
+        # valid in the source, but the vertex (99.998, 0.0185) rounds onto the edge: plain rounding gives a self-intersection
+        polygon = Polygon([(0, 0), (100, 0), (100, 10), (99.998, 0.0185), (94.103, 10), (0, 10)])
+        self.assertFalse(load_wkt(shapely.to_wkt(polygon, rounding_precision=2)).is_valid)
+        back = load_wkt(self.wkt_of_single_sector(polygon))
+        self.assertIsInstance(back, Polygon)
+        self.assertTrue(back.is_valid)
+        self.assertAlmostEqual(back.area, polygon.area, delta=0.1)
+
+    def test_a_hairline_notch_that_rounding_would_split_stays_one_polygon_at_a_finer_grid(self):
+        polygon = Polygon([(0, 0), (100, 0), (100, 10), (50.006, 0.0049), (50.004, 10)])   # the notch tip is 4.9 mm from the edge
+        self.assertTrue(polygon.is_valid)
+        back = load_wkt(self.wkt_of_single_sector(polygon))
+        self.assertIsInstance(back, Polygon)
+        self.assertTrue(back.is_valid)
+        self.assertAlmostEqual(back.area, polygon.area, delta=0.01)
 
     def test_tile_index_floors_negative_coordinates(self):
         gdf = gpd.GeoDataFrame(

@@ -65,11 +65,28 @@ def _tile_groups(geoms):
     return groups
 
 
+def _wkts(geoms, ids):
+    """WKT of the polygons on a 1 cm grid, which is how the coordinates are written (2 decimals).
+
+    Plain rounding would turn about 6 % of the sectors into self-intersecting rings (cm-wide spikes and notches), so the
+    polygons are snapped with set_precision, which keeps them valid. A hairline neck can make that split a polygon in
+    two (about 20 sectors in Kosicky kraj); those are snapped to 0.1 mm instead and written with 4 decimals.
+    """
+    snapped = shapely.set_precision(geoms, 0.01)
+    wkts = shapely.to_wkt(snapped, rounding_precision=2)
+    for i in np.flatnonzero(shapely.get_type_id(snapped) != _POLYGON):
+        finer = shapely.set_precision(geoms[i], 0.0001)
+        if shapely.get_type_id(finer) != _POLYGON:
+            raise ValueError("sector %s cannot be written as a single valid polygon" % ids[i])
+        wkts[i] = shapely.to_wkt(finer, rounding_precision=4)
+    return wkts
+
+
 def _write_tiles(folder, sectors, geoms, classes, groups):
-    wkts = shapely.to_wkt(geoms, rounding_precision=2)
     areas = np.round(shapely.area(geoms) / 10000.0, 2).tolist()
     outlines = _outlines(geoms)
     ids, labels, types = (sectors[c].astype(str).tolist() for c in ("id", "label", "typ"))
+    wkts = _wkts(geoms, ids)
     for (tx, ty), rows in groups.items():
         with gzip.open(os.path.join(folder, "%d_%d.jsonl.gz" % (tx, ty)), "wt", encoding="utf-8") as f:
             for i in rows:
