@@ -7,7 +7,8 @@
 A sector lives in the 10 km tile of its centroid in EPSG:5514 (tx = floor(cx / 10000), ty likewise; the
 coordinates are negative in Slovakia). A tile file is gzip, UTF-8, one JSON object per line with
 id, label, typ, cls (plugin class 1..10), area_ha, wkt (the polygon in EPSG:5514, 2 decimals) and
-outline (its exterior ring in WGS84, closed, 6 decimals). Only non-empty tiles are written.
+outline (its exterior ring in WGS84, closed, 6 decimals). Only non-empty tiles are written. The manifest's
+coverage_wkt is the area the sectors cover (EPSG:5514, whole metres).
 """
 
 import gzip
@@ -82,6 +83,23 @@ def _wkts(geoms, ids):
     return wkts
 
 
+def _coverage_wkt(geoms, groups, close_m=100.0):
+    """WKT (EPSG:5514, whole metres) of the area the sectors cover: the union of all polygons, closed with a buffer
+    of close_m and simplified by close_m, so a reader can tell where the region's data ends.
+
+    The union is built per tile first and then over the tile unions, which keeps it fast for 100k polygons. The
+    result is snapped to a 1 m grid with set_precision (which keeps it valid), so it can be written with 0 decimals.
+    """
+    parts = [shapely.union_all(geoms[rows]) for rows in groups.values()]
+    closed = shapely.union_all(parts).buffer(close_m).simplify(close_m, preserve_topology=True)
+    coverage = shapely.set_precision(closed, 1.0)
+    if not coverage.is_valid:
+        coverage = shapely.set_precision(closed.buffer(0), 1.0)
+    if coverage.is_empty or not coverage.is_valid or coverage.geom_type not in ("Polygon", "MultiPolygon"):
+        raise ValueError("the coverage of the sectors is not a valid polygon (%s)" % coverage.geom_type)
+    return shapely.to_wkt(coverage, rounding_precision=0)
+
+
 def _write_tiles(folder, sectors, geoms, classes, groups):
     areas = np.round(shapely.area(geoms) / 10000.0, 2).tolist()
     outlines = _outlines(geoms)
@@ -110,7 +128,8 @@ def write_bundle(sectors, out_dir, region, version, classes, attribution, source
     groups = _tile_groups(geoms)
     manifest = {"format": FORMAT, "region": region, "version": version, "crs": CRS, "tile_m": TILE_M,
                 "sector_count": len(sectors), "tiles": {"%d_%d" % key: len(rows) for key, rows in sorted(groups.items())},
-                "transform": OPERATION_NAME, "sources": sources, "attribution": attribution}
+                "transform": OPERATION_NAME, "sources": sources, "attribution": attribution,
+                "coverage_wkt": _coverage_wkt(geoms, groups)}
     parent = os.path.dirname(version_dir)
     os.makedirs(parent, exist_ok=True)
     staging = tempfile.mkdtemp(prefix=version + ".partial-", dir=parent)

@@ -84,6 +84,21 @@ class WriteBundleTest(unittest.TestCase):
         for key, count in manifest["tiles"].items():
             self.assertEqual(len(read_tile(version_dir, key)), count)
 
+    def test_manifest_carries_the_coverage_of_the_sectors(self):
+        manifest = self.write()
+        self.assertIn("coverage_wkt", manifest)
+        coverage = load_wkt(manifest["coverage_wkt"])
+        self.assertIn(coverage.geom_type, ("Polygon", "MultiPolygon"))
+        self.assertTrue(coverage.is_valid)
+        self.assertFalse(coverage.is_empty)
+        for geometry in sectors_gdf().geometry:
+            self.assertTrue(coverage.contains(geometry.representative_point()))
+        self.assertFalse(coverage.intersects(shapely.Point(KOSICE_X + 20000, KOSICE_Y + 20000)))
+        self.assertFalse(coverage.intersects(shapely.Point(-258000, -1242000)))   # between the sectors, far from all
+        # 0 decimals: every number in the WKT is an integer
+        numbers = manifest["coverage_wkt"].replace("(", " ").replace(")", " ").replace(",", " ").split()[1:]
+        self.assertTrue(all(n.lstrip("-").isdigit() for n in numbers), manifest["coverage_wkt"][:200])
+
     def test_tile_lines_carry_class_area_and_a_closed_wgs84_outline(self):
         self.write()
         version_dir = os.path.join(self.out, "ke", "v1")
