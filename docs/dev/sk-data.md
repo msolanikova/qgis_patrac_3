@@ -56,6 +56,21 @@ you to pass `--overwrite` or choose another `--out`). The new data is always wri
 validates. When validation fails, the old folder is untouched and the new data stays in the `<out>.partial-*`
 folder for inspection (the path is printed); delete it when you no longer need it.
 
+## Service bundle for the SAR Planner
+
+`python -m tools.sk_data service-bundle --region ke --version 2026-11-22 [--out ROOT] [--overwrite]` cuts the
+sectors of a built region (`vektor/ZABAGED/sectors.shp`) into 10 km tiles for the SAR Planner. Default `ROOT` is
+`<data>/service-bundles` (`~/patracdata/service-bundles`). The layout is `<ROOT>/<region>/<version>/manifest.json`
+and `tiles/<tx>_<ty>.jsonl.gz` (one JSON sector per line: id, label, typ, class, area_ha, polygon as WKT in
+EPSG:5514, outline in WGS84). A sector goes to the tile of its centroid, `floor(x / 10000)`. The WKT is snapped to
+a 1 cm grid with `shapely.set_precision` (plain rounding to 2 decimals made about 6 % of the polygons invalid); the
+few sectors with a hairline neck that the 1 cm grid would split are snapped to 0.1 mm and written with 4 decimals.
+The manifest is written last and carries the sources from `metadata.json`, the notice from `ATTRIBUTION.txt` and
+`coverage_wkt`: the area the region's data covers (union of all sectors, `buffer(100)`, `simplify(100)`, snapped to
+whole metres, EPSG:5514), so the SAR Planner can warn when a search area reaches beyond the data. An existing
+version is refused (exit code 2); `--overwrite` replaces it only after the new one is complete. The bundle is
+data: keep it out of git.
+
 ## Compare two builds in QGIS
 
 ```bash

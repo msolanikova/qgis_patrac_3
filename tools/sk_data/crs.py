@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""WGS84 -> S-JTSK (EPSG:5514) with the Slovak transformation pinned.
+"""WGS84 <-> S-JTSK (EPSG:5514) with the Slovak transformation pinned.
 
 PROJ offers several operations for this pair. EPSG:4836 "S-JTSK to WGS 84 (4)" is the one defined for
 Slovakia (1 m); the Czechoslovak fallback "(3)" is about 10 m away at Kosice and the Czech ones "(1)" and
@@ -15,16 +15,26 @@ OPERATION_NAME = "S-JTSK to WGS 84 (4)"
 _cache = {}
 
 
-def wgs84_to_sjtsk():
-    """pyproj Transformer EPSG:4326 -> EPSG:5514 (lon, lat in; x, y out) using the Slovak operation."""
-    if "t" not in _cache:
-        for transformer in TransformerGroup(4326, 5514, always_xy=True).transformers:
+def _pinned(source, target, key):
+    """Transformer source -> target (always_xy) using the operation named OPERATION_NAME, cached under key."""
+    if key not in _cache:
+        for transformer in TransformerGroup(source, target, always_xy=True).transformers:
             if OPERATION_NAME in transformer.description:
-                _cache["t"] = transformer
+                _cache[key] = transformer
                 break
         else:
             raise RuntimeError("PROJ has no operation named %r; check the PROJ database of this QGIS" % OPERATION_NAME)
-    return _cache["t"]
+    return _cache[key]
+
+
+def wgs84_to_sjtsk():
+    """pyproj Transformer EPSG:4326 -> EPSG:5514 (lon, lat in; x, y out) using the Slovak operation."""
+    return _pinned(4326, 5514, "to_sjtsk")
+
+
+def sjtsk_to_wgs84():
+    """pyproj Transformer EPSG:5514 -> EPSG:4326 (x, y in; lon, lat out), the same Slovak operation inverted."""
+    return _pinned(5514, 4326, "to_wgs84")
 
 
 def project_geometries(geoms, transformer=None):
