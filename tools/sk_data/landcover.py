@@ -17,10 +17,25 @@ gdal.UseExceptions()
 log = logging.getLogger("sk_data")
 
 
+def _polygonal(geom):
+    """The polygon part of a repaired geometry, or None when it has no area.
+
+    shapely.make_valid turns an invalid polygon whose ring doubles back along a line (a spike, or a self-touching
+    ring) into a GeometryCollection: the polygon PLUS the stray line. Filtering on the geometry type then drops the
+    whole polygon: 62 OSM polygons in Kosicky kraj were lost this way, among them 39 forests of up to 58,000 ha, and
+    their sectors fell back to the coarser WorldCover typing (small "grass" sectors inside forests).
+    """
+    if geom is None or geom.geom_type in ("Polygon", "MultiPolygon"):
+        return geom
+    parts = [g for g in shapely.get_parts(geom) if g.geom_type in ("Polygon", "MultiPolygon")]
+    return shapely.union_all(parts) if parts else None
+
+
 def osm_cover(polygons, rules, size):
     """OSM polygons (EPSG:5514, with a 'tags' column) that map to a sector type and are big enough to matter."""
     typs = [osm_typ(rules, tags) for tags in polygons["tags"]]
-    gdf = gpd.GeoDataFrame({"typ": typs}, geometry=shapely.make_valid(polygons.geometry.values), crs=5514)
+    repaired = [_polygonal(g) for g in shapely.make_valid(polygons.geometry.values)]
+    gdf = gpd.GeoDataFrame({"typ": typs}, geometry=repaired, crs=5514)
     gdf = gdf[gdf["typ"].notna() & gdf.geometry.type.isin(["Polygon", "MultiPolygon"])]
     return gdf[gdf.geometry.area >= size.min_cover_m2].reset_index(drop=True)
 
