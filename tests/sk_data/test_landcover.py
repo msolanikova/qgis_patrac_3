@@ -6,7 +6,7 @@ import unittest
 import geopandas as gpd
 import numpy as np
 from osgeo import gdal, osr
-from shapely.geometry import box
+from shapely.geometry import MultiPolygon, Polygon, box
 
 from tools.sk_data.config import SectorSize
 from tools.sk_data.landcover import osm_cover, worldcover_cover
@@ -24,6 +24,23 @@ class OsmCoverTest(unittest.TestCase):
         cover = osm_cover(polygons, RULES, SIZE)
         self.assertEqual(sorted(cover["typ"]), ["LPSTROM", "VODPLO"])  # 400 m2 forest and the untyped polygon are dropped
         self.assertEqual(cover.crs.to_epsg(), 5514)
+
+    def test_keeps_the_polygon_of_an_invalid_geometry_that_repairs_to_a_collection(self):
+        # A ring that doubles back along a line (a spike) is invalid; shapely repairs it to a polygon PLUS a stray
+        # line, a GeometryCollection. The forest must not be dropped because of the line (real case: an 8,000 ha
+        # natural=wood relation near Ostrov, 62 such OSM polygons in Kosicky kraj).
+        spike = Polygon([(0, 0), (200, 0), (200, 200), (0, 200), (0, 0), (-40, 0), (0, 0)])
+        self.assertFalse(spike.is_valid)
+        polygons = gpd.GeoDataFrame({"tags": [{"natural": "wood"}]}, geometry=[MultiPolygon([spike])], crs=5514)
+        cover = osm_cover(polygons, RULES, SIZE)
+        self.assertEqual(list(cover["typ"]), ["LPSTROM"])
+        self.assertEqual(cover.geometry.iloc[0].geom_type, "Polygon")
+        self.assertAlmostEqual(cover.geometry.iloc[0].area, 40000.0)  # the stray line adds nothing
+
+    def test_a_geometry_with_no_area_after_repair_is_dropped(self):
+        line_only = Polygon([(0, 0), (100, 0), (200, 0), (0, 0)])      # all points on one line: no area
+        polygons = gpd.GeoDataFrame({"tags": [{"natural": "wood"}]}, geometry=[line_only], crs=5514)
+        self.assertEqual(len(osm_cover(polygons, RULES, SIZE)), 0)
 
 
 def write_raster(path, array, origin=(21.200, 48.706), pixel=0.0001):
