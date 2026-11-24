@@ -7,7 +7,7 @@ from unittest import mock
 
 import geopandas as gpd
 import shapely
-from shapely.geometry import MultiPolygon, Polygon, box
+from shapely.geometry import LineString, MultiLineString, MultiPolygon, Point, Polygon, box
 from shapely.wkt import loads as load_wkt
 
 from tools.sk_data import __main__ as cli
@@ -33,8 +33,8 @@ def sectors_gdf():
         geometry=[square(KOSICE_X, KOSICE_Y), square(-262400.0, -1245000.0), ring_with_hole], crs=5514)
 
 
-def read_tile(version_dir, key):
-    with gzip.open(os.path.join(version_dir, "tiles", key + ".jsonl.gz"), "rt", encoding="utf-8") as f:
+def read_tile(version_dir, key, folder="tiles"):
+    with gzip.open(os.path.join(version_dir, folder, key + ".jsonl.gz"), "rt", encoding="utf-8") as f:
         return [json.loads(line) for line in f]
 
 
@@ -216,6 +216,157 @@ class WriteBundleTest(unittest.TestCase):
     def test_wrong_crs_is_refused(self):
         with self.assertRaisesRegex(ValueError, "5514"):
             self.write(gdf=sectors_gdf().set_crs(4326, allow_override=True))
+
+
+def roads_gdf():
+    """Three road pieces: r1 in tile (-27, -125); r2 and r3 in tile (-26, -125). r3 starts in tile -27 (x < -260000)
+    but its midpoint is in tile -26; r2 has no name, no tracktype and no surface; r3 has a quote and non-ASCII letters."""
+    return gpd.GeoDataFrame(
+        {"id": ["r1", "r2", "r3"],
+         "name": ["Hlavn\u00e1", None, 'Ulica "Q" \u013dudov\u00edta'],
+         "highway": ["residential", "track", "service"],
+         "tracktype": [None, None, "grade2"],
+         "surface": ["asphalt", None, "gravel"],
+         "worse": [False, True, True],
+         "length_m": [1500.04, 200.0, 3000.27]},
+        geometry=[LineString([(-262580.123, -1240038.456), (-262500.0, -1240100.0), (-262400.0, -1240200.5)]),
+                  LineString([(-255000.0, -1245000.0), (-254900.0, -1245000.0)]),
+                  LineString([(-261000.0, -1245000.0), (-258000.0, -1245000.0)])], crs=5514)
+
+
+class RoadTilesTest(unittest.TestCase):
+    def setUp(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.out = tmp.name
+        self.version_dir = os.path.join(self.out, "ke", "v1")
+
+    def write(self, roads, **kwargs):
+        return service_bundle.write_bundle(sectors_gdf(), self.out, "ke", "v1", CLASSES, "Attribution text", SOURCES,
+                                           roads=roads, **kwargs)
+
+    def test_without_roads_nothing_changes(self):
+        manifest = self.write(None)
+        self.assertEqual(set(manifest), {"format", "region", "version", "crs", "tile_m", "sector_count", "tiles",
+                                         "transform", "sources", "attribution", "coverage_wkt"})
+        self.assertEqual(sorted(os.listdir(self.version_dir)), ["manifest.json", "tiles"])
+
+    def test_road_tiles_and_manifest_entry(self):
+        manifest = self.write(roads_gdf())
+        self.assertEqual(sorted(os.listdir(os.path.join(self.out, "ke"))), ["v1"])   # no staging folder left over
+        self.assertEqual(sorted(os.listdir(self.version_dir)), ["manifest.json", "roads", "tiles"])
+        self.assertEqual(sorted(os.listdir(os.path.join(self.version_dir, "roads"))),
+                         ["-26_-125.jsonl.gz", "-27_-125.jsonl.gz"])
+        self.assertEqual(manifest["roads"], {"count": 3, "tiles": {"-27_-125": 1, "-26_-125": 2}})
+        for key, count in manifest["roads"]["tiles"].items():
+            self.assertEqual(len(read_tile(self.version_dir, key, "roads")), count)
+        self.assertEqual([r["id"] for r in read_tile(self.version_dir, "-26_-125", "roads")], ["r2", "r3"])
+        with open(os.path.join(self.version_dir, "manifest.json"), encoding="utf-8") as f:
+            self.assertEqual(json.load(f), manifest)
+
+    def test_a_road_line_has_the_contract_fields(self):
+        self.write(roads_gdf())
+        first = read_tile(self.version_dir, "-27_-125", "roads")[0]
+        self.assertEqual(list(first), ["id", "name", "highway", "tracktype", "surface", "worse", "length_m", "wkt", "outline"])
+        self.assertEqual((first["id"], first["name"], first["highway"], first["tracktype"], first["surface"]),
+                         ("r1", "Hlavn\u00e1", "residential", None, "asphalt"))
+        self.assertIs(first["worse"], False)
+        self.assertEqual(first["length_m"], 1500.0)
+        line = load_wkt(first["wkt"])
+        self.assertIsInstance(line, LineString)
+        self.assertEqual(list(line.coords), [(-262580.12, -1240038.46), (-262500.0, -1240100.0), (-262400.0, -1240200.5)])
+        for x, y in line.coords:
+            self.assertEqual((x, y), (round(x, 2), round(y, 2)))
+        outline = first["outline"]
+        self.assertEqual(len(outline), len(line.coords))
+        self.assertGreaterEqual(len(outline), 2)
+        for (lon, lat), (x, y) in zip(outline, line.coords):
+            exp_lon, exp_lat = sjtsk_to_wgs84().transform(x, y)
+            self.assertEqual((lon, lat), (round(exp_lon, 6), round(exp_lat, 6)))
+            self.assertTrue(48 < lat < 49 and 21 < lon < 22, (lon, lat))
+        r2, r3 = read_tile(self.version_dir, "-26_-125", "roads")
+        self.assertIs(r2["worse"], True)
+        self.assertEqual((r2["name"], r2["tracktype"], r2["surface"]), (None, None, None))
+        self.assertEqual((r3["name"], r3["tracktype"], r3["length_m"]), ('Ulica "Q" \u013dudov\u00edta', "grade2", 3000.3))
+        with gzip.open(os.path.join(self.version_dir, "roads", "-26_-125.jsonl.gz"), "rb") as f:
+            raw = f.read()
+        self.assertIn("\u013dudov\u00edta".encode("utf-8"), raw)   # not written as an \\u escape
+
+    def test_roads_do_not_touch_the_sector_tiles(self):
+        with_roads = self.write(roads_gdf())
+        tiles = {key: read_tile(self.version_dir, key) for key in with_roads["tiles"]}
+        without = service_bundle.write_bundle(sectors_gdf(), self.out, "ke", "v2", CLASSES, "Attribution text", SOURCES)
+        for key in without["tiles"]:
+            self.assertEqual(read_tile(os.path.join(self.out, "ke", "v2"), key), tiles[key])
+        for key in ("sector_count", "tiles", "coverage_wkt"):
+            self.assertEqual(with_roads[key], without[key])
+        self.assertEqual(sorted(os.listdir(os.path.join(self.version_dir, "tiles"))),
+                         sorted(os.listdir(os.path.join(self.out, "ke", "v2", "tiles"))))
+
+    def test_an_empty_roads_frame_gives_count_zero(self):
+        manifest = self.write(roads_gdf().iloc[:0])
+        self.assertEqual(manifest["roads"], {"count": 0, "tiles": {}})
+        self.assertEqual(sorted(os.listdir(self.version_dir)), ["manifest.json", "tiles"])
+        self.assertEqual(manifest["sector_count"], 3)
+        with open(os.path.join(self.version_dir, "manifest.json"), encoding="utf-8") as f:
+            self.assertEqual(json.load(f), manifest)
+
+    def test_roads_info_is_merged_into_the_entry(self):
+        manifest = self.write(roads_gdf(), roads_info={"osm_bytes": 5})
+        self.assertEqual(manifest["roads"], {"count": 3, "tiles": {"-27_-125": 1, "-26_-125": 2}, "osm_bytes": 5})
+        with open(os.path.join(self.version_dir, "manifest.json"), encoding="utf-8") as f:
+            self.assertEqual(json.load(f)["roads"]["osm_bytes"], 5)
+
+    def assert_refused(self, roads, pattern):
+        with self.assertRaisesRegex(ValueError, pattern):
+            self.write(roads)
+        self.assertFalse(os.path.exists(self.version_dir))
+        self.assertEqual(os.listdir(os.path.join(self.out, "ke")) if os.path.isdir(os.path.join(self.out, "ke")) else [], [])
+
+    def test_an_id_without_the_r_prefix_is_refused(self):
+        roads = roads_gdf()
+        roads.loc[1, "id"] = "x2"
+        self.assert_refused(roads, "x2")
+
+    def test_a_duplicate_id_is_refused(self):
+        roads = roads_gdf()
+        roads.loc[2, "id"] = "r1"
+        self.assert_refused(roads, "r1")
+
+    def test_a_geometry_that_is_not_a_single_line_is_refused(self):
+        for bad in (MultiLineString([[(0, 0), (1, 1)], [(5, 5), (6, 6)]]), Point(0, 0), LineString()):
+            roads = roads_gdf()
+            roads.loc[1, "geometry"] = bad
+            with self.subTest(bad=bad.wkt):
+                self.assert_refused(roads, "r2 ")
+
+    def test_a_frame_not_in_5514_is_refused(self):
+        self.assert_refused(roads_gdf().set_crs(4326, allow_override=True), "5514")
+
+    def test_a_line_that_collapses_at_two_decimals_is_refused(self):
+        roads = roads_gdf()
+        roads.loc[2, "geometry"] = LineString([(-258000.0, -1245000.0), (-258000.002, -1245000.003)])
+        self.assert_refused(roads, "r3 ")
+
+    def test_a_worse_that_is_not_boolean_is_refused(self):
+        for bad in ("yes", 1, None):
+            roads = roads_gdf().astype({"worse": object})
+            roads.loc[0, "worse"] = bad
+            with self.subTest(bad=bad):
+                self.assert_refused(roads, "r1 ")
+
+    def test_a_failing_overwrite_with_roads_keeps_the_old_version(self):
+        self.write(roads_gdf())
+        with open(os.path.join(self.version_dir, "manifest.json"), encoding="utf-8") as f:
+            before = f.read()
+        bad = roads_gdf()
+        bad.loc[2, "id"] = "r1"
+        with self.assertRaises(ValueError):
+            self.write(bad, overwrite=True)
+        with open(os.path.join(self.version_dir, "manifest.json"), encoding="utf-8") as f:
+            self.assertEqual(f.read(), before)
+        self.assertEqual(len(read_tile(self.version_dir, "-26_-125", "roads")), 2)
+        self.assertEqual(sorted(os.listdir(os.path.join(self.out, "ke"))), ["v1"])
 
 
 class RegionAndCommandTest(unittest.TestCase):
