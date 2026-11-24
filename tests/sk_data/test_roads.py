@@ -79,6 +79,16 @@ class ClassifyTest(unittest.TestCase):
 TRACK = {"highway": "track"}
 
 
+def rotate_ring(points, k):
+    """A closed point list started k vertices later; other point lists unchanged."""
+    if len(points) < 4 or points[0] != points[-1]:
+        return points
+    ring = points[:-1]
+    k %= len(ring)
+    rotated = ring[k:] + ring[:k]
+    return rotated + [rotated[0]]
+
+
 class RoadPiecesTest(unittest.TestCase):
     def pieces(self, *rows, region=REGION):
         return roads.road_pieces(lines_gdf(*rows), region)
@@ -168,6 +178,13 @@ class RoadPiecesTest(unittest.TestCase):
         out = self.pieces((TRACK, [[(0, 0), (1000, 0), (2000, 0)], [(1000, 0), (1000, 1500)]]))
         self.assertEqual(self.lengths(out), [1000.0, 1000.0, 1500.0])
 
+    def assert_same_pieces(self, out, again):
+        self.assertEqual(len(out), len(again))
+        for column in COLUMNS[:-1]:
+            self.assertEqual(out[column].tolist(), again[column].tolist(), column)
+        for a, b in zip(out.geometry, again.geometry):
+            self.assertTrue(a.equals_exact(b, 0.001), (a.wkt, b.wkt))
+
     def test_ids_are_r_numbers_in_midpoint_order_and_do_not_depend_on_input_order(self):
         rows = [
             (TRACK, [(0, 0), (1000, 0), (2000, 0)]),
@@ -175,23 +192,40 @@ class RoadPiecesTest(unittest.TestCase):
             ({"highway": "residential", "name": "Hlavná"}, [(3000, 500), (3500, 200), (4200, 900)]),
             ({"highway": "path"}, [(-500, 3000), (-400, 2000)]),
             ({"highway": "service"}, [(5000, 5000), (5000, 4000)]),
+            # a ring with a spur at J = (10500, 0), the ring way starting elsewhere
+            (TRACK, [(10000, 500), (10000, 0), (10500, 0), (10500, 500), (10000, 500)]),
+            ({"highway": "path"}, [(10500, 0), (11000, -300)]),
+            # a plain ring
+            (TRACK, [(20000, 0), (20600, 0), (20600, 600), (20000, 600), (20000, 0)]),
         ]
         out = self.pieces(*rows)
         self.assertEqual(list(out.columns), COLUMNS)
-        self.assertEqual(out["id"].tolist(), ["r%d" % i for i in range(1, 6)])
-        reversed_rows = [(t, list(reversed(points))) for t, points in reversed(rows)]
-        again = self.pieces(*reversed_rows)
-        self.assertEqual(len(out), len(again))
-        for column in COLUMNS[:-1]:
-            self.assertEqual(out[column].tolist(), again[column].tolist(), column)
-        for a, b in zip(out.geometry, again.geometry):
-            self.assertTrue(a.equals_exact(b, 0.001), (a.wkt, b.wkt))
+        self.assertEqual(out["id"].tolist(), ["r%d" % i for i in range(1, 9)])
+        ring_with_spur = [g for g in out.geometry if g.is_closed and g.length == 2000.0][0]
+        self.assertEqual(ring_with_spur.coords[0], (BASE_X + 10500, BASE_Y + 0))
+        variants = {
+            "reversed": [(t, list(reversed(points))) for t, points in reversed(rows)],
+            "rotated": [(t, rotate_ring(points, 2)) for t, points in rows],
+            "reversed and rotated": [(t, list(reversed(rotate_ring(points, 3)))) for t, points in reversed(rows)],
+        }
+        for label, variant in variants.items():
+            with self.subTest(label):
+                self.assert_same_pieces(out, self.pieces(*variant))
         for geom, length in zip(out.geometry, out["length_m"]):
             self.assertLessEqual(geom.coords[0], geom.coords[-1])
             self.assertEqual(length, round(geom.length, 1))
         mids = [g.interpolate(0.5, normalized=True) for g in out.geometry]
         keys = [(round(m.x, 2), round(m.y, 2), length) for m, length in zip(mids, out["length_m"])]
         self.assertEqual(keys, sorted(keys))
+
+    def test_a_long_ring_is_cut_the_same_whatever_its_start_and_direction(self):
+        ring = [(0, 0), (3000, 0), (3000, 3000), (0, 3000), (0, 0)]
+        out = self.pieces((TRACK, ring))
+        self.assertEqual(self.lengths(out), [4000.0, 4000.0, 4000.0])
+        for k in range(4):
+            for points in (rotate_ring(ring, k), list(reversed(rotate_ring(ring, k)))):
+                with self.subTest(points=points):
+                    self.assert_same_pieces(out, self.pieces((TRACK, points)))
 
     def test_an_empty_input_gives_an_empty_frame_with_the_columns(self):
         for frame in (lines_gdf(), lines_gdf(({"highway": "motorway"}, [(0, 0), (2000, 0)]))):

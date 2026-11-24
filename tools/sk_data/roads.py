@@ -134,6 +134,39 @@ def _chains(stretches, key, start, end):
     return geoms, source
 
 
+def _junction_points(stretches, start, end):
+    """Coordinates (as (x, y) tuples) of the points where three or more stretch ends meet."""
+    point = np.concatenate([start, end])
+    xy = np.concatenate([shapely.get_coordinates(shapely.get_point(stretches, 0)),
+                         shapely.get_coordinates(shapely.get_point(stretches, -1))])
+    degree = np.bincount(point)[point]
+    return set(map(tuple, xy[degree >= 3].tolist()))
+
+
+def _canonical_rings(geoms, junctions):
+    """Closed lines restarted at a canonical vertex and given a canonical direction, so that they do not depend
+    on where or in which direction the input ring started. The start is the smallest (x, y) junction point on
+    the ring, else its smallest (x, y) vertex; the direction goes first to the smaller of the start's two
+    neighbours."""
+    closed = np.flatnonzero(shapely.is_closed(geoms) & (shapely.get_num_points(geoms) >= 4))
+    if len(closed) == 0:
+        return geoms
+    geoms = geoms.copy()
+    for i in closed.tolist():
+        ring = [tuple(c) for c in shapely.get_coordinates(geoms[i])[:-1].tolist()]
+        at_junction = [c for c in ring if c in junctions]
+        first = min(at_junction) if at_junction else min(ring)
+        # a vertex the ring passes more than once: take the occurrence giving the smallest sequence
+        candidates = []
+        for k in (k for k, c in enumerate(ring) if c == first):
+            rotated = ring[k:] + ring[:k]
+            backwards = [rotated[0]] + rotated[:0:-1]
+            candidates.append(min(rotated, backwards, key=lambda r: r[1:]))
+        best = min(candidates, key=lambda r: r[1:])
+        geoms[i] = shapely.linestrings(best + [best[0]])
+    return geoms
+
+
 def _split_long(geoms, source):
     """Chains longer than MAX_PIECE_M cut into ceil(length / MAX_PIECE_M) parts of equal length."""
     lengths = shapely.length(geoms)
@@ -180,7 +213,8 @@ def road_pieces(lines, region):
     stretches, stretch_part, start, end = cut
     stretch_row = part_row[stretch_part]
     chains, chain_stretch = _chains(stretches, key[stretch_row], start, end)
-    pieces, piece_row = _split_long(_orient(chains), stretch_row[chain_stretch])
+    chains = _canonical_rings(_orient(chains), _junction_points(stretches, start, end))
+    pieces, piece_row = _split_long(chains, stretch_row[chain_stretch])
     pieces = _orient(pieces)
 
     length_m = np.array([round(float(v), 1) for v in shapely.length(pieces)])
