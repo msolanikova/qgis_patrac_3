@@ -355,6 +355,20 @@ class RoadTilesTest(unittest.TestCase):
             with self.subTest(bad=bad):
                 self.assert_refused(roads, "r1 ")
 
+    def test_a_highway_that_is_not_a_non_empty_string_is_refused(self):
+        for bad in (None, float("nan"), "", 5):
+            roads = roads_gdf().astype({"highway": object})
+            roads.loc[1, "highway"] = bad
+            with self.subTest(bad=bad):
+                self.assert_refused(roads, "r2 ")
+
+    def test_a_length_that_is_not_a_finite_non_negative_number_is_refused(self):
+        for bad in (float("nan"), float("inf"), -1.0, None, "5", True):
+            roads = roads_gdf().astype({"length_m": object})
+            roads.loc[2, "length_m"] = bad
+            with self.subTest(bad=bad):
+                self.assert_refused(roads, "r3 ")
+
     def test_a_failing_overwrite_with_roads_keeps_the_old_version(self):
         self.write(roads_gdf())
         with open(os.path.join(self.version_dir, "manifest.json"), encoding="utf-8") as f:

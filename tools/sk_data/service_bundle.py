@@ -24,6 +24,7 @@ roads has neither the key nor the folder. Roads ship in a new version, not into 
 
 import gzip
 import json
+import math
 import os
 import shutil
 import tempfile
@@ -162,9 +163,15 @@ def _check_roads(roads):
     lines = roads.geometry.to_numpy()
     for i in np.flatnonzero((shapely.get_type_id(lines) != _LINESTRING) | shapely.is_empty(lines)):
         raise ValueError("road %s is not a single non-empty LineString" % ids[i])
-    for road_id, worse in zip(ids, roads["worse"].tolist()):
+    for road_id, worse, highway, length in zip(ids, roads["worse"].tolist(), roads["highway"].tolist(),
+                                               roads["length_m"].tolist()):
         if not isinstance(worse, (bool, np.bool_)):
             raise ValueError("road %s has worse=%r, which is not a boolean" % (road_id, worse))
+        if not isinstance(highway, str) or not highway:
+            raise ValueError("road %s has highway=%r, which is not a non-empty string" % (road_id, highway))
+        if (isinstance(length, (bool, np.bool_)) or not isinstance(length, (int, float, np.integer, np.floating))
+                or not math.isfinite(length) or length < 0):
+            raise ValueError("road %s has length_m=%r, which is not a finite number >= 0" % (road_id, length))
     return _snap_lines(lines, ids)
 
 
@@ -201,7 +208,7 @@ def _write_road_tiles(folder, roads, lines, groups):
             for i in rows:
                 f.write(json.dumps({"id": ids[i], "name": names[i], "highway": highways[i], "tracktype": tracktypes[i],
                                     "surface": surfaces[i], "worse": worse[i], "length_m": lengths[i], "wkt": wkts[i],
-                                    "outline": outlines[i]}, ensure_ascii=False) + "\n")
+                                    "outline": outlines[i]}, ensure_ascii=False, allow_nan=False) + "\n")
 
 
 def write_bundle(sectors, out_dir, region, version, classes, attribution, sources, overwrite=False, roads=None,
