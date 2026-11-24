@@ -81,12 +81,15 @@ def cmd_service_bundle(args):
     root = data_root()
     out = args.out or os.path.join(root, "service-bundles")
     try:
-        manifest = service_bundle.bundle_region(root, args.region, args.version, out, overwrite=args.overwrite)
-    except (FileExistsError, ValueError) as exc:
+        manifest = service_bundle.bundle_region(root, args.region, args.version, out, overwrite=args.overwrite,
+                                                roads=not args.no_roads, osm_pbf=args.osm)
+    except (FileExistsError, FileNotFoundError, ValueError) as exc:
         print("error:", exc, file=sys.stderr)
         return 2
-    print("wrote %s (%d sectors in %d tiles)" % (os.path.join(os.path.abspath(out), args.region, args.version),
-                                                 manifest["sector_count"], len(manifest["tiles"])))
+    summary = "%d sectors in %d tiles" % (manifest["sector_count"], len(manifest["tiles"]))
+    if "roads" in manifest:
+        summary += ", %d road pieces in %d tiles" % (manifest["roads"]["count"], len(manifest["roads"]["tiles"]))
+    print("wrote %s (%s)" % (os.path.join(os.path.abspath(out), args.region, args.version), summary))
     return 0
 
 
@@ -120,7 +123,11 @@ def main(argv=None):
         if name == "service-bundle":
             p.add_argument("--version", required=True, help="name of the bundle version, for example 2026-11-22")
             p.add_argument("--out", help="bundle root (default <data>/service-bundles); writes <out>/<region>/<version>/")
-            p.add_argument("--overwrite", action="store_true", help="replace an existing version folder after the new one is complete")
+            p.add_argument("--overwrite", action="store_true",
+                           help="replace an existing version folder after the new one is complete; do NOT use it on a "
+                                "version that cases were made on (road tiles must ship in a new version)")
+            p.add_argument("--no-roads", action="store_true", help="leave the road tiles out (by default they are built from the OSM file)")
+            p.add_argument("--osm", metavar="PATH", help="OSM file the roads are cut from (default: the file `download` fetched)")
         if name == "project":
             p.add_argument("--region-dir", action="append", required=True, metavar="LABEL=DIR")
             p.add_argument("--bookmark", action="append", metavar="NAME=LON,LAT",

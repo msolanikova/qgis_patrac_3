@@ -1,9 +1,13 @@
+import os
+import re
+import tempfile
 import unittest
 
 import geopandas as gpd
 from shapely.geometry import LineString, MultiLineString, box
 
-from tools.sk_data import roads
+from tests.sk_data.osm_fixture import ROADS_OSM_XML, write_roads_fixture
+from tools.sk_data import extract, roads
 
 BASE_X, BASE_Y = -262000.0, -1245000.0
 REGION = box(BASE_X - 50000, BASE_Y - 50000, BASE_X + 50000, BASE_Y + 50000)
@@ -233,6 +237,79 @@ class RoadPiecesTest(unittest.TestCase):
             self.assertEqual(len(out), 0)
             self.assertEqual(list(out.columns), COLUMNS)
             self.assertEqual(out.crs.to_epsg(), 5514)
+
+
+class RoadsFromOsmFileTest(unittest.TestCase):
+    """The hand-written OSM file of tests.sk_data.osm_fixture.ROADS_OSM_XML, see the list of ways there."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.tmp = tempfile.TemporaryDirectory()
+        cls.osm = write_roads_fixture(os.path.join(cls.tmp.name, "roads.osm"))
+        boundary = extract.region_boundary(cls.osm, "Road kraj", os.path.join(cls.tmp.name, "w0"))
+        cls.gpkg = extract.extract_roads(cls.osm, extract.bbox_of(boundary), os.path.join(cls.tmp.name, "x"))
+        os.mkdir(os.path.join(cls.tmp.name, "w1"))
+        cls.pieces = roads.region_roads(cls.osm, "Road kraj", os.path.join(cls.tmp.name, "w1"))
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.tmp.cleanup()
+
+    def test_extract_roads_keeps_only_included_highways(self):
+        self.assertTrue(self.gpkg.endswith(".gpkg"))
+        lines = extract.read_lines(self.gpkg)
+        found = sorted(t["highway"] for t in lines["tags"])
+        self.assertEqual(set(found), {"residential", "unclassified", "track", "path", "footway", "service"})
+        self.assertTrue(set(found) <= roads.INCLUDED_HIGHWAYS)
+        self.assertNotIn("motorway", found)
+        self.assertEqual(len(found), 10)   # every way of the file but the motorway
+
+    def test_region_roads_returns_the_expected_pieces(self):
+        out = self.pieces
+        self.assertEqual(list(out.columns), COLUMNS)
+        self.assertEqual(out.crs.to_epsg(), 5514)
+        self.assertEqual(sorted(out["id"], key=lambda i: int(i[1:])), ["r%d" % k for k in range(1, 7)])
+        rows = {kind: out[mask] for kind, mask in (
+            ("street", out["highway"] == "residential"), ("gravel", out["highway"] == "unclassified"),
+            ("grade2", out["tracktype"] == "grade2"), ("path", out["highway"] == "path"),
+            ("ring", (out["highway"] == "track") & out["tracktype"].isna()))}
+        self.assertEqual({k: len(v) for k, v in rows.items()},
+                         {"street": 2, "gravel": 1, "grade2": 1, "path": 1, "ring": 1})
+        street = rows["street"]
+        self.assertEqual(set(street["name"]), {'Hlavn\u00e1 "star\u00e1"'})
+        self.assertEqual(sorted(street["length_m"].round(-1)), [370.0, 740.0])
+        self.assertFalse(street["worse"].any())
+        self.assertTrue(street["tracktype"].isna().all() and street["surface"].isna().all())
+        gravel = rows["gravel"].iloc[0]
+        self.assertEqual((gravel["surface"], gravel["worse"], gravel["name"]), ("gravel", True, None))
+        self.assertAlmostEqual(gravel["length_m"], 368.0, delta=10)
+        grade2 = rows["grade2"].iloc[0]
+        self.assertEqual((grade2["highway"], grade2["worse"], grade2["name"], grade2["surface"]), ("track", True, None, None))
+        self.assertAlmostEqual(grade2["length_m"], 667.0, delta=10)
+        path = rows["path"].iloc[0]
+        self.assertEqual((path["worse"], path["length_m"] // 100), (True, 6.0))   # not cut where it crosses the street
+        ring = rows["ring"].iloc[0]
+        self.assertTrue(ring["worse"])
+        self.assertTrue(ring.geometry.is_closed)
+        self.assertGreaterEqual(len(ring.geometry.coords), 4)
+        self.assertAlmostEqual(ring["length_m"], 1404.0, delta=20)
+
+    def test_the_excluded_ways_and_the_outside_track_are_absent(self):
+        self.assertEqual(set(self.pieces["highway"]), {"residential", "unclassified", "track", "path"})
+        self.assertNotIn("footway", set(self.pieces["highway"]))
+        self.assertNotIn("service", set(self.pieces["highway"]))
+        self.assertEqual(int((self.pieces["highway"] == "track").sum()), 2)   # grade2 and the ring; not the outside one
+        self.assertEqual(int((self.pieces["highway"] == "residential").sum()), 2)   # the street; not the tunnel
+        self.assertEqual(len(self.pieces), 6)
+
+    def test_an_area_without_any_road_gives_an_empty_frame(self):
+        only_the_area = os.path.join(self.tmp.name, "area.osm")
+        with open(only_the_area, "w", encoding="utf-8") as f:
+            f.write(re.sub(r'  <way id="1\d\d">.*?</way>\n', "", ROADS_OSM_XML, flags=re.S))
+        work = os.path.join(self.tmp.name, "w2")
+        os.mkdir(work)
+        out = roads.region_roads(only_the_area, "Road kraj", work)
+        self.assertEqual((len(out), list(out.columns), out.crs.to_epsg()), (0, COLUMNS, 5514))
 
 
 if __name__ == "__main__":

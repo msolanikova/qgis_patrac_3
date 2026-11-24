@@ -24,6 +24,7 @@ roads has neither the key nor the folder. Roads ship in a new version, not into 
 
 import gzip
 import json
+import logging
 import math
 import os
 import shutil
@@ -34,12 +35,14 @@ import numpy as np
 import pandas as pd
 import shapely
 
-from tools.sk_data.config import region_dir
+from tools.sk_data import roads as road_rules
+from tools.sk_data.config import REGIONS, region_dir
 from tools.sk_data.crs import OPERATION_NAME, sjtsk_to_wgs84
 from tools.sk_data.export import zabaged_dir
-from tools.sk_data.pipeline import _replace
+from tools.sk_data.pipeline import _replace, default_osm_path
 from tools.sk_data.rules import load_rules
 
+log = logging.getLogger("sk_data")
 FORMAT = 1
 TILE_M = 10000
 CRS = "EPSG:5514"
@@ -269,12 +272,40 @@ def sources_from_metadata(metadata):
     return [{"name": name, "detail": info.get("url", "")} for name, info in (metadata.get("sources") or {}).items()]
 
 
-def bundle_region(root, region, version, out_dir, overwrite=False):
-    """Write the bundle of the built region <root>/kraje/<region> to <out_dir>/<region>/<version>/; return the manifest."""
+def bundle_region(root, region, version, out_dir, overwrite=False, roads=False, osm_pbf=None, region_name=None):
+    """Write the bundle of the built region <root>/kraje/<region> to <out_dir>/<region>/<version>/; return the manifest.
+
+    With roads=True the bundle also gets the road tiles, built from the OSM file osm_pbf (default: the downloaded
+    <root>/source/osm-slovakia file) for the administrative area named region_name (default: the name of the region
+    in config.REGIONS). They are cut in a temporary folder under <root>/work, which is removed afterwards. A
+    missing OSM file raises FileNotFoundError. The manifest's roads entry records the size of that file
+    (osm_bytes); a warning is logged when it differs from the size recorded for the sectors in metadata.json,
+    because then the roads and the sectors come from different OSM snapshots.
+    """
     folder = region_dir(root, region)
+    if roads:
+        pbf = osm_pbf or default_osm_path(root)
+        if not os.path.isfile(pbf):
+            raise FileNotFoundError("the OSM file %s does not exist; run: python -m tools.sk_data download --region %s, "
+                                    "or point to the file with --osm" % (pbf, region))
     sectors = gpd.read_file(os.path.join(zabaged_dir(folder), "sectors.shp"))
     with open(os.path.join(folder, "metadata.json"), encoding="utf-8") as f:
-        sources = sources_from_metadata(json.load(f))
+        metadata = json.load(f)
     with open(os.path.join(folder, "ATTRIBUTION.txt"), encoding="utf-8") as f:
         attribution = f.read()
-    return write_bundle(sectors, out_dir, region, version, load_rules().classes, attribution, sources, overwrite=overwrite)
+    piece_frame = roads_info = None
+    if roads:
+        osm_bytes = os.path.getsize(pbf)
+        built_with = ((metadata.get("sources") or {}).get("osm") or {}).get("bytes")
+        if built_with is not None and built_with != osm_bytes:
+            log.warning("%s has %d bytes but the sectors were built from an OSM file of %s bytes; the roads come from "
+                        "another OSM snapshot than the sectors", pbf, osm_bytes, built_with)
+        os.makedirs(os.path.join(root, "work"), exist_ok=True)
+        work = tempfile.mkdtemp(prefix=region + "-roads-", dir=os.path.join(root, "work"))
+        try:
+            piece_frame = road_rules.region_roads(pbf, region_name or REGIONS[region], work)
+        finally:
+            shutil.rmtree(work, ignore_errors=True)
+        roads_info = {"osm_bytes": osm_bytes, "max_piece_m": road_rules.MAX_PIECE_M, "min_piece_m": road_rules.MIN_PIECE_M}
+    return write_bundle(sectors, out_dir, region, version, load_rules().classes, attribution,
+                        sources_from_metadata(metadata), overwrite=overwrite, roads=piece_frame, roads_info=roads_info)

@@ -1,6 +1,7 @@
 # -*- coding: utf-8 -*-
 """Road pieces from OSM lines: which ways count as roads or paths for the service bundle, and what they are called."""
 
+import logging
 import math
 
 import geopandas as gpd
@@ -9,7 +10,12 @@ import pandas as pd
 import shapely
 from shapely.ops import substring
 
+from tools.sk_data import extract
+from tools.sk_data.crs import to_sjtsk
 from tools.sk_data.layers import _is_tunnel
+from tools.sk_data.pipeline import _region_boundary
+
+log = logging.getLogger("sk_data")
 
 INCLUDED_HIGHWAYS = frozenset({"track", "path", "bridleway", "service", "unclassified", "residential",
                                "living_street", "tertiary", "cycleway", "footway"})
@@ -231,3 +237,15 @@ def road_pieces(lines, region):
     out.insert(0, "id", pd.Series(["r%d" % (i + 1) for i in range(len(order))], dtype=object))
     out["length_m"] = length_m[order]
     return gpd.GeoDataFrame(out, geometry=gpd.GeoSeries(pieces[order], crs=5514), crs=5514)[PIECE_COLUMNS]
+
+
+def region_roads(pbf, region_name, work_dir):
+    """Road pieces (see road_pieces) of the administrative area (level 4) named region_name in the OSM file pbf.
+
+    work_dir must exist; the temporary GeoPackages of the boundary and of the lines are written there.
+    """
+    _, _, region, bbox = _region_boundary(pbf, region_name, work_dir)
+    lines = to_sjtsk(extract.read_lines(extract.extract_roads(pbf, bbox, work_dir)))
+    pieces = road_pieces(lines, region)
+    log.info("road pieces: %d from %d lines in %s", len(pieces), len(lines), region_name)
+    return pieces
