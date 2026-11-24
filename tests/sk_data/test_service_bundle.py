@@ -7,6 +7,7 @@ import unittest
 from unittest import mock
 
 import geopandas as gpd
+import pandas as pd
 import shapely
 from shapely.geometry import LineString, MultiLineString, MultiPolygon, Point, Polygon, box
 from shapely.wkt import loads as load_wkt
@@ -430,9 +431,16 @@ class RoadsOfRegionTest(unittest.TestCase):
         self.write_region(self.osm_bytes)
         self.out = os.path.join(self.root, "out")
 
-    def write_region(self, osm_bytes):
+    def write_region(self, osm_bytes, sectors=None):
         meta = {"region": "ke", "sources": {"osm": {"url": "https://example.org/osm.pbf", "bytes": osm_bytes}}}
-        write_region(os.path.join(self.root, "kraje", "ke"), sectors_gdf(), {}, meta)
+        write_region(os.path.join(self.root, "kraje", "ke"), sectors_gdf() if sectors is None else sectors, {}, meta)
+
+    def built_up_sectors(self, typ="AREZAS"):
+        """The sectors of sectors_gdf plus a 300 m square of the given type around the midpoint (-266790, -1241666) of
+        the street piece "Hlavna" of the fixture (736 m; the only piece whose midpoint is there)."""
+        extra = gpd.GeoDataFrame({"id": ["4"], "label": ["Z1"], "typ": [typ]}, geometry=[square(-266790.0, -1241666.0, 300.0)],
+                                 crs=5514)
+        return gpd.GeoDataFrame(pd.concat([sectors_gdf(), extra], ignore_index=True), crs=5514)
 
     def bundle(self, version="v1", **kwargs):
         return service_bundle.bundle_region(self.root, "ke", version, self.out, roads=True, osm_pbf=self.osm,
@@ -460,6 +468,58 @@ class RoadsOfRegionTest(unittest.TestCase):
             self.assertEqual(len(read_tile(version_dir, key, "roads")), count)
         self.assertEqual(manifest["sector_count"], 3)
         self.assertEqual(manifest["tiles"], {"-27_-125": 2, "-26_-125": 1})
+
+    def lines_of(self, manifest, version="v1"):
+        return [line for key in manifest["roads"]["tiles"]
+                for line in read_tile(os.path.join(self.out, "ke", version), key, "roads")]
+
+    def test_roads_in_a_built_up_sector_are_left_out(self):
+        self.write_region(self.osm_bytes, self.built_up_sectors("AREZAS"))
+        manifest = self.bundle()
+        entry = manifest["roads"]
+        self.assertEqual((entry["count"], sum(entry["tiles"].values())), (5, 5))
+        self.assertEqual((entry["built_up_class"], entry["built_up_excluded"]), (6, True))
+        lines = self.lines_of(manifest)
+        self.assertEqual(sorted(line["id"] for line in lines), ["r%d" % k for k in range(1, 6)])
+        self.assertEqual(sorted(line["length_m"] // 100 for line in lines), [3.0, 3.0, 6.0, 6.0, 14.0])
+        self.assertNotIn(7.0, [line["length_m"] // 100 for line in lines])   # the 736 m street is gone
+        self.assertEqual(manifest["sector_count"], 4)
+
+    def test_every_class_6_type_counts_as_built_up_and_other_classes_do_not(self):
+        for typ, count in (("HRBITO", 5), ("INTRAV", 5), ("ZAHPAR", 6), ("LPSTROM", 6), ("OTHER", 6)):
+            with self.subTest(typ):
+                self.write_region(self.osm_bytes, self.built_up_sectors(typ))
+                self.assertEqual(self.bundle(version="v-" + typ, overwrite=True)["roads"]["count"], count)
+
+    def test_without_a_built_up_sector_all_roads_stay_and_the_info_says_so(self):
+        entry = self.bundle()["roads"]
+        self.assertEqual((entry["count"], entry["built_up_class"], entry["built_up_excluded"]), (6, 6, True))
+
+    def test_the_built_up_exclusion_can_be_switched_off(self):
+        self.write_region(self.osm_bytes, self.built_up_sectors())
+        with mock.patch.object(roads, "EXCLUDE_IN_BUILT_UP", False):
+            entry = self.bundle()["roads"]
+        self.assertEqual((entry["count"], entry["built_up_class"], entry["built_up_excluded"]), (6, 6, False))
+
+    def test_command_leaves_out_roads_in_built_up_sectors(self):
+        self.write_region(self.osm_bytes, self.built_up_sectors())
+        code, out, err = self.run_cli("--version", "v1", "--osm", self.osm)
+        self.assertEqual((code, err), (0, ""))
+        entry = self.read_manifest()["roads"]
+        self.assertEqual((entry["count"], entry["built_up_excluded"]), (5, True))
+        self.assertIn("5 road pieces", out)
+
+    def test_an_existing_version_is_refused_before_the_osm_file_or_sectors_are_read(self):
+        os.makedirs(os.path.join(self.out, "ke", "v1"))
+        missing = os.path.join(self.root, "nope.osm.pbf")
+        with mock.patch.object(service_bundle.gpd, "read_file", side_effect=AssertionError("sectors were read")):
+            with self.assertRaisesRegex(FileExistsError, "v1 already exists; pass --overwrite"):
+                service_bundle.bundle_region(self.root, "ke", "v1", self.out, roads=True, osm_pbf=missing,
+                                             region_name="Road kraj")
+            with self.assertRaisesRegex(FileExistsError, "v1 already exists"):
+                service_bundle.bundle_region(self.root, "ke", "v1", self.out)
+        self.assertEqual(os.listdir(os.path.join(self.out, "ke")), ["v1"])
+        self.assertFalse(os.path.exists(os.path.join(self.root, "work")))
 
     def test_without_roads_there_is_no_roads_key(self):
         manifest = service_bundle.bundle_region(self.root, "ke", "v2", self.out)

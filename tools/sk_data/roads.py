@@ -23,9 +23,17 @@ WORSE_HIGHWAYS = frozenset({"track", "path", "bridleway"})
 UNPAVED_SURFACES = frozenset({"unpaved", "compacted", "fine_gravel", "gravel", "pebblestone", "dirt", "earth",
                               "ground", "grass", "mud", "sand", "woodchips", "clay", "rock", "ice", "snow",
                               "salt"})
-EXCLUDED_FOOTWAYS = frozenset({"sidewalk", "crossing"})
+EXCLUDED_FOOTWAYS = frozenset({"sidewalk", "crossing", "traffic_island", "access_aisle"})
 EXCLUDED_SERVICES = frozenset({"parking_aisle", "driveway", "drive-through", "emergency_access"})
 EXCLUDED_ACCESS = frozenset({"no", "private"})
+ACCESS_FOOT_OVERRIDE = frozenset({"yes", "permissive", "designated"})   # foot=... that keeps a way with access=no/private
+# mountain-grade paths (SAC T3 and harder) are searched by the mountain service; mountain_hiking (T2) stays
+EXCLUDED_SAC_SCALES = frozenset({"demanding_mountain_hiking", "alpine_hiking", "demanding_alpine_hiking",
+                                 "difficult_alpine_hiking"})
+BUILT_UP_CLASS = 6   # the plugin class of the built-up sectors (rules/classes.json: AREZAS, ARUCZA, HRBITO, ...)
+EXCLUDE_IN_BUILT_UP = True   # False: road pieces in built-up sectors stay (the owner: no roads as gpx in built-up areas)
+# the sar-planner reader selects road tiles with a 5000 m margin (tiles_within(margin_m=5000) in bundle.py), which is
+# safe only while MAX_PIECE_M / 2 <= 5000 m
 MAX_PIECE_M = 5000.0
 MIN_PIECE_M = 30.0
 PIECE_COLUMNS = ["id", "name", "highway", "tracktype", "surface", "worse", "length_m", "geometry"]
@@ -39,8 +47,10 @@ def classify(tags):
     highway = tags.get("highway")
     if highway not in INCLUDED_HIGHWAYS:
         return None
-    if (_is_tunnel(tags) or tags.get("footway") in EXCLUDED_FOOTWAYS
-            or tags.get("service") in EXCLUDED_SERVICES or tags.get("access") in EXCLUDED_ACCESS):
+    if (_is_tunnel(tags) or tags.get("indoor") == "yes" or tags.get("footway") in EXCLUDED_FOOTWAYS
+            or tags.get("service") in EXCLUDED_SERVICES or tags.get("sac_scale") in EXCLUDED_SAC_SCALES):
+        return None
+    if tags.get("access") in EXCLUDED_ACCESS and tags.get("foot") not in ACCESS_FOOT_OVERRIDE:
         return None
     surfaces = {part.strip() for part in (tags.get("surface") or "").split(";")}
     return highway in WORSE_HIGHWAYS or bool(surfaces & UNPAVED_SURFACES)
@@ -193,9 +203,45 @@ def _split_long(geoms, source):
             np.concatenate([source[keep], np.array(extra_source, dtype=source.dtype)]))
 
 
-def road_pieces(lines, region):
+def _built_up_polygons(built_up):
+    """The polygons of built_up (None, a geometry, or an iterable of geometries) as an object array; empty when
+    there are none or when EXCLUDE_IN_BUILT_UP is off."""
+    if built_up is None or not EXCLUDE_IN_BUILT_UP:
+        return np.array([], dtype=object)
+    if isinstance(built_up, shapely.Geometry):
+        built_up = [built_up]
+    geoms = np.array([g for g in built_up if g is not None], dtype=object)
+    if len(geoms) == 0:
+        return geoms
+    parts = shapely.get_parts(geoms)
+    return parts[~shapely.is_empty(parts)]
+
+
+def _in_built_up(polygons, x, y):
+    """Boolean array: the point (x[i], y[i]) lies within one of the polygons. An STRtree finds the candidates, so the
+    10^4 to 10^5 sector polygons of a region are not unioned."""
+    if len(polygons) == 0 or len(x) == 0:
+        return np.zeros(len(x), dtype=bool)
+    hit = shapely.STRtree(polygons).query(shapely.points(x, y), predicate="within")
+    inside = np.zeros(len(x), dtype=bool)
+    inside[hit[0]] = True
+    return inside
+
+
+def _rank(values):
+    """Integer sort key of a column of strings and nulls: alphabetical, nulls last."""
+    codes = pd.Categorical(values).codes.astype(np.int64)
+    codes[codes < 0] = codes.max() + 1 if len(codes) else 0
+    return codes
+
+
+def road_pieces(lines, region, built_up=None):
     """Road pieces (EPSG:5514) from OSM lines in EPSG:5514 with a 'tags' column; see the road piece rules.
-    Columns PIECE_COLUMNS, sorted by midpoint, ids r1, r2, ..."""
+    Columns PIECE_COLUMNS, sorted by midpoint, ids r1, r2, ...
+
+    built_up (None, a shapely geometry or an iterable of geometries, EPSG:5514): the built-up sectors; a piece whose
+    midpoint lies within one of them is dropped, before the ids are given. Ignored when EXCLUDE_IN_BUILT_UP is False.
+    """
     if len(lines) == 0:
         return _empty_pieces()
     tags = lines["tags"].tolist()
@@ -228,24 +274,32 @@ def road_pieces(lines, region):
     mid_x, mid_y = np.round(shapely.get_x(mid), _MIDPOINT_DECIMALS), np.round(shapely.get_y(mid), _MIDPOINT_DECIMALS)
     shapely.prepare(region)
     keep = (length_m >= MIN_PIECE_M) & shapely.contains_xy(region, mid_x, mid_y)
+    polygons = _built_up_polygons(built_up)
+    if keep.any() and len(polygons):
+        candidates = np.flatnonzero(keep)
+        keep[candidates[_in_built_up(polygons, mid_x[candidates], mid_y[candidates])]] = False
     if not keep.any():
         return _empty_pieces()
     pieces, piece_row, length_m, mid_x, mid_y = (a[keep] for a in (pieces, piece_row, length_m, mid_x, mid_y))
     first = shapely.get_coordinates(shapely.get_point(pieces, 0))
-    order = np.lexsort((first[:, 1], first[:, 0], length_m, mid_y, mid_x))
-    out = attributes.iloc[piece_row[order]].reset_index(drop=True)
+    attributes = attributes.iloc[piece_row].reset_index(drop=True)
+    # two pieces with the same geometry (OSM draws some ways twice) are ordered by their attributes, nulls last
+    ranks = [_rank(attributes[c]) for c in ("surface", "tracktype", "name", "highway")]
+    order = np.lexsort((*ranks, first[:, 1], first[:, 0], length_m, mid_y, mid_x))
+    out = attributes.iloc[order].reset_index(drop=True)
     out.insert(0, "id", pd.Series(["r%d" % (i + 1) for i in range(len(order))], dtype=object))
     out["length_m"] = length_m[order]
     return gpd.GeoDataFrame(out, geometry=gpd.GeoSeries(pieces[order], crs=5514), crs=5514)[PIECE_COLUMNS]
 
 
-def region_roads(pbf, region_name, work_dir):
-    """Road pieces (see road_pieces) of the administrative area (level 4) named region_name in the OSM file pbf.
+def region_roads(pbf, region_name, work_dir, built_up=None):
+    """Road pieces (see road_pieces; built_up is passed on) of the administrative area (level 4) named region_name in
+    the OSM file pbf.
 
     work_dir must exist; the temporary GeoPackages of the boundary and of the lines are written there.
     """
     _, _, region, bbox = _region_boundary(pbf, region_name, work_dir)
     lines = to_sjtsk(extract.read_lines(extract.extract_roads(pbf, bbox, work_dir)))
-    pieces = road_pieces(lines, region)
+    pieces = road_pieces(lines, region, built_up)
     log.info("road pieces: %d from %d lines in %s", len(pieces), len(lines), region_name)
     return pieces

@@ -214,6 +214,14 @@ def _write_road_tiles(folder, roads, lines, groups):
                                     "outline": outlines[i]}, ensure_ascii=False, allow_nan=False) + "\n")
 
 
+def _version_dir(out_dir, region, version, overwrite):
+    """<out_dir>/<region>/<version> as an absolute path; FileExistsError when it exists and overwrite is false."""
+    version_dir = os.path.abspath(os.path.join(out_dir, region, version))
+    if os.path.lexists(version_dir) and not overwrite:
+        raise FileExistsError("%s already exists; pass --overwrite to replace it or choose another version" % version_dir)
+    return version_dir
+
+
 def write_bundle(sectors, out_dir, region, version, classes, attribution, sources, overwrite=False, roads=None,
                  roads_info=None):
     """Write the bundle of a GeoDataFrame (EPSG:5514; fields id, label, typ) to <out_dir>/<region>/<version>/; return the manifest.
@@ -227,9 +235,7 @@ def write_bundle(sectors, out_dir, region, version, classes, attribution, source
     tracktype, surface, worse, length_m; see roads.road_pieces), possibly empty. It adds the roads/ tiles and the
     "roads" entry of the manifest; roads_info (a dict) is merged into that entry, and ignored without roads.
     """
-    version_dir = os.path.abspath(os.path.join(out_dir, region, version))
-    if os.path.lexists(version_dir) and not overwrite:
-        raise FileExistsError("%s already exists; pass --overwrite to replace it or choose another version" % version_dir)
+    version_dir = _version_dir(out_dir, region, version, overwrite)
     geoms = _check(sectors, classes)
     groups = _tile_groups(geoms)
     if roads is not None:
@@ -281,7 +287,12 @@ def bundle_region(root, region, version, out_dir, overwrite=False, roads=False, 
     missing OSM file raises FileNotFoundError. The manifest's roads entry records the size of that file
     (osm_bytes); a warning is logged when it differs from the size recorded for the sectors in metadata.json,
     because then the roads and the sectors come from different OSM snapshots.
+
+    An existing version folder raises FileExistsError (unless overwrite) before anything is read. Road pieces whose
+    midpoint lies in a built-up sector (class roads.BUILT_UP_CLASS) are left out while roads.EXCLUDE_IN_BUILT_UP is on;
+    the roads entry of the manifest records built_up_class and built_up_excluded.
     """
+    _version_dir(out_dir, region, version, overwrite)
     folder = region_dir(root, region)
     if roads:
         pbf = osm_pbf or default_osm_path(root)
@@ -300,12 +311,15 @@ def bundle_region(root, region, version, out_dir, overwrite=False, roads=False, 
         if built_with is not None and built_with != osm_bytes:
             log.warning("%s has %d bytes but the sectors were built from an OSM file of %s bytes; the roads come from "
                         "another OSM snapshot than the sectors", pbf, osm_bytes, built_with)
+        classes = load_rules().classes
+        built_up = sectors.geometry[sectors["typ"].map(classes) == road_rules.BUILT_UP_CLASS].to_numpy()
         os.makedirs(os.path.join(root, "work"), exist_ok=True)
         work = tempfile.mkdtemp(prefix=region + "-roads-", dir=os.path.join(root, "work"))
         try:
-            piece_frame = road_rules.region_roads(pbf, region_name or REGIONS[region], work)
+            piece_frame = road_rules.region_roads(pbf, region_name or REGIONS[region], work, built_up)
         finally:
             shutil.rmtree(work, ignore_errors=True)
-        roads_info = {"osm_bytes": osm_bytes, "max_piece_m": road_rules.MAX_PIECE_M, "min_piece_m": road_rules.MIN_PIECE_M}
+        roads_info = {"osm_bytes": osm_bytes, "max_piece_m": road_rules.MAX_PIECE_M, "min_piece_m": road_rules.MIN_PIECE_M,
+                      "built_up_class": road_rules.BUILT_UP_CLASS, "built_up_excluded": road_rules.EXCLUDE_IN_BUILT_UP}
     return write_bundle(sectors, out_dir, region, version, load_rules().classes, attribution,
                         sources_from_metadata(metadata), overwrite=overwrite, roads=piece_frame, roads_info=roads_info)

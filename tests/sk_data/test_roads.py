@@ -1,13 +1,17 @@
+import itertools
 import os
 import re
 import tempfile
 import unittest
 
+from unittest import mock
+
 import geopandas as gpd
-from shapely.geometry import LineString, MultiLineString, box
+from shapely.geometry import LineString, MultiLineString, MultiPolygon, box
 
 from tests.sk_data.osm_fixture import ROADS_OSM_XML, write_roads_fixture
 from tools.sk_data import extract, roads
+from tools.sk_data.rules import load_rules
 
 BASE_X, BASE_Y = -262000.0, -1245000.0
 REGION = box(BASE_X - 50000, BASE_Y - 50000, BASE_X + 50000, BASE_Y + 50000)
@@ -72,6 +76,48 @@ class ClassifyTest(unittest.TestCase):
             (tags("footway", footway="path"), False),
         ])
 
+    def test_mountain_grade_paths_are_excluded(self):
+        # "searched by the mountain service, not by us": T3 (demanding_mountain_hiking) and harder; T2 and plain hiking stay
+        kept = [("hiking", "path", True), ("mountain_hiking", "path", True), ("mountain_hiking", "track", True),
+                ("mountain_hiking", "footway", False)]
+        gone = [(scale, highway) for scale in ("demanding_mountain_hiking", "alpine_hiking", "demanding_alpine_hiking",
+                                               "difficult_alpine_hiking")
+                for highway in ("path", "track", "footway", "bridleway", "residential")]
+        self.check([(tags(highway, sac_scale=scale), worse) for scale, highway, worse in kept]
+                   + [(tags(highway, sac_scale=scale), None) for scale, highway in gone])
+        self.assertEqual(roads.EXCLUDED_SAC_SCALES, {"demanding_mountain_hiking", "alpine_hiking",
+                                                     "demanding_alpine_hiking", "difficult_alpine_hiking"})
+
+    def test_indoor_ways_are_excluded(self):
+        self.check([
+            (tags("footway", indoor="yes"), None),
+            (tags("path", indoor="yes"), None),
+            (tags("footway", indoor="no"), False),
+            (tags("footway", indoor="room"), False),
+        ])
+
+    def test_more_footway_values_are_excluded(self):
+        self.check([
+            (tags("footway", footway="traffic_island"), None),
+            (tags("footway", footway="access_aisle"), None),
+            (tags("footway", footway="link"), False),   # the owner has not decided about links: unchanged
+        ])
+        self.assertTrue({"traffic_island", "access_aisle"} <= roads.EXCLUDED_FOOTWAYS)
+
+    def test_foot_access_overrides_a_general_ban(self):
+        self.check([
+            (tags("track", access="private", foot="yes"), True),
+            (tags("track", access="no", foot="permissive"), True),
+            (tags("path", access="no", foot="designated"), True),
+            (tags("track", access="private", foot="no"), None),
+            (tags("track", access="private", foot="private"), None),
+            (tags("track", access="private", foot="customers"), None),
+            (tags("track", access="no"), None),
+            (tags("track", foot="yes"), True),
+            (tags("track", foot="no"), True),   # foot=no alone is not a ban the rules know about
+        ])
+        self.assertEqual(roads.ACCESS_FOOT_OVERRIDE, {"yes", "permissive", "designated"})
+
     def test_display_name(self):
         self.assertEqual(roads.display_name({"name": "Hlavná", "ref": "III/3345"}), "Hlavná")
         self.assertEqual(roads.display_name({"ref": "III/3345"}), "III/3345")
@@ -93,9 +139,13 @@ def rotate_ring(points, k):
     return rotated + [rotated[0]]
 
 
+def built_box(x0, y0, x1, y1):
+    return box(BASE_X + x0, BASE_Y + y0, BASE_X + x1, BASE_Y + y1)
+
+
 class RoadPiecesTest(unittest.TestCase):
-    def pieces(self, *rows, region=REGION):
-        return roads.road_pieces(lines_gdf(*rows), region)
+    def pieces(self, *rows, region=REGION, built_up=None):
+        return roads.road_pieces(lines_gdf(*rows), region, built_up)
 
     def lengths(self, frame):
         return sorted(frame["length_m"].tolist())
@@ -222,6 +272,73 @@ class RoadPiecesTest(unittest.TestCase):
         keys = [(round(m.x, 2), round(m.y, 2), length) for m, length in zip(mids, out["length_m"])]
         self.assertEqual(keys, sorted(keys))
 
+    def test_ids_do_not_depend_on_input_order_for_pieces_with_the_same_geometry(self):
+        # real data has such pairs (an OSM way drawn twice with different tags)
+        same = [(0, 0), (1000, 0)]
+        rows = [({"highway": "track"}, same),
+                ({"highway": "residential", "name": "Hlavn\u00e1"}, same),
+                ({"highway": "track", "tracktype": "grade1"}, same),
+                ({"highway": "track", "tracktype": "grade1", "surface": "gravel"}, same),
+                ({"highway": "path", "name": "Z"}, same),
+                ({"highway": "path", "name": "A"}, same)]
+        out = self.pieces(*rows)
+        self.assertEqual(len(out), 6)
+        for order in itertools.permutations(range(len(rows))):
+            with self.subTest(order=order):
+                self.assert_same_pieces(out, self.pieces(*[rows[i] for i in order]))
+        # nulls last: the track without tracktype comes after the one with it
+        tracks = out[out["highway"] == "track"]
+        self.assertEqual(tracks["tracktype"].tolist(), ["grade1", "grade1", None])
+        self.assertEqual(tracks["surface"].tolist(), ["gravel", None, None])
+
+    def test_pieces_in_built_up_polygons_are_dropped_by_their_midpoint(self):
+        rows = [(TRACK, [(0, 0), (1000, 0)]),                 # midpoint (500, 0)
+                (TRACK, [(0, 5000), (1000, 5000)]),           # midpoint (500, 5000)
+                ({"highway": "residential"}, [(0, 8000), (1000, 8000)]),
+                (TRACK, [(2000, 3000), (3000, 3000)])]        # midpoint (2500, 3000): outside, its end is not
+        built_up = [built_box(400, -100, 600, 100), built_box(0, 7900, 2000, 8100)]
+        out = self.pieces(*rows, built_up=built_up)
+        self.assertEqual(self.lengths(out), [1000.0, 1000.0])
+        mids = sorted((round(g.interpolate(0.5, normalized=True).x - BASE_X), round(g.interpolate(0.5, normalized=True).y - BASE_Y))
+                      for g in out.geometry)
+        self.assertEqual(mids, [(500, 5000), (2500, 3000)])
+        self.assertEqual(out["id"].tolist(), ["r1", "r2"])   # ids are given after the exclusion
+
+    def test_a_piece_whose_end_is_in_a_built_up_polygon_but_whose_midpoint_is_not_is_kept(self):
+        out = self.pieces((TRACK, [(0, 0), (1000, 0)]), built_up=[built_box(700, -100, 1200, 100)])
+        self.assertEqual(self.lengths(out), [1000.0])
+        out = self.pieces((TRACK, [(0, 0), (1000, 0)]), built_up=[built_box(-100, -100, 300, 100)])
+        self.assertEqual(self.lengths(out), [1000.0])
+
+    def test_built_up_may_be_one_geometry_a_multipolygon_or_a_geoseries(self):
+        rows = [(TRACK, [(0, 0), (1000, 0)]), (TRACK, [(0, 3000), (1000, 3000)]), (TRACK, [(0, 6000), (1000, 6000)])]
+        a, b = built_box(400, -100, 600, 100), built_box(400, 2900, 600, 3100)
+        for label, built_up in {"polygon": a, "multipolygon": MultiPolygon([a, b]), "geoseries": gpd.GeoSeries([a, b], crs=5514),
+                                "list": [a, b], "tuple": (a, b), "nested multipolygon": [MultiPolygon([a, b])]}.items():
+            with self.subTest(label):
+                expected = 2 if label == "polygon" else 1
+                self.assertEqual(len(self.pieces(*rows, built_up=built_up)), expected)
+
+    def test_nothing_is_dropped_without_built_up_polygons(self):
+        rows = [(TRACK, [(0, 0), (1000, 0)]), (TRACK, [(0, 3000), (1000, 3000)])]
+        for built_up in (None, [], gpd.GeoSeries([], crs=5514), MultiPolygon(), box(0, 0, 0, 0).buffer(0)):
+            with self.subTest(built_up=repr(built_up)[:40]):
+                self.assertEqual(len(self.pieces(*rows, built_up=built_up)), 2)
+
+    def test_exclusion_in_built_up_areas_can_be_switched_off(self):
+        rows = [(TRACK, [(0, 0), (1000, 0)]), (TRACK, [(0, 3000), (1000, 3000)])]
+        built_up = [built_box(400, -100, 600, 100)]
+        self.assertTrue(roads.EXCLUDE_IN_BUILT_UP)
+        self.assertEqual(roads.BUILT_UP_CLASS, 6)
+        self.assertEqual(len(self.pieces(*rows, built_up=built_up)), 1)
+        with mock.patch.object(roads, "EXCLUDE_IN_BUILT_UP", False):
+            self.assertEqual(len(self.pieces(*rows, built_up=built_up)), 2)
+
+    def test_built_up_class_is_the_built_up_class_of_the_rules(self):
+        classes = load_rules().classes
+        self.assertEqual({t for t, c in classes.items() if c == roads.BUILT_UP_CLASS},
+                         {"AREZAS", "ARUCZA", "HRBITO", "PRSTPR", "ROZTRA", "ROZZRI", "ULOMIS", "USNAOD", "INTRAV"})
+
     def test_a_long_ring_is_cut_the_same_whatever_its_start_and_direction(self):
         ring = [(0, 0), (3000, 0), (3000, 3000), (0, 3000), (0, 0)]
         out = self.pieces((TRACK, ring))
@@ -262,7 +379,7 @@ class RoadsFromOsmFileTest(unittest.TestCase):
         self.assertEqual(set(found), {"residential", "unclassified", "track", "path", "footway", "service"})
         self.assertTrue(set(found) <= roads.INCLUDED_HIGHWAYS)
         self.assertNotIn("motorway", found)
-        self.assertEqual(len(found), 10)   # every way of the file but the motorway
+        self.assertEqual(len(found), 12)   # every way of the file but the motorway
 
     def test_region_roads_returns_the_expected_pieces(self):
         out = self.pieces
@@ -301,6 +418,7 @@ class RoadsFromOsmFileTest(unittest.TestCase):
         self.assertEqual(int((self.pieces["highway"] == "track").sum()), 2)   # grade2 and the ring; not the outside one
         self.assertEqual(int((self.pieces["highway"] == "residential").sum()), 2)   # the street; not the tunnel
         self.assertEqual(len(self.pieces), 6)
+        self.assertEqual(int((self.pieces["highway"] == "path").sum()), 1)   # not the alpine_hiking path 191
 
     def test_an_area_without_any_road_gives_an_empty_frame(self):
         only_the_area = os.path.join(self.tmp.name, "area.osm")

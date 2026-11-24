@@ -88,6 +88,10 @@ ROADS_OSM_XML = """<?xml version='1.0' encoding='UTF-8'?>
   <node id="182" lat="48.712" lon="21.230"/>
   <node id="183" lat="48.715" lon="21.230"/>
   <node id="184" lat="48.715" lon="21.225"/>
+  <node id="191" lat="48.710" lon="21.200"/>
+  <node id="192" lat="48.710" lon="21.206"/>
+  <node id="193" lat="48.711" lon="21.200"/>
+  <node id="194" lat="48.711" lon="21.206"/>
   <way id="1"><nd ref="1"/><nd ref="2"/><nd ref="3"/><nd ref="4"/><nd ref="1"/></way>
   <way id="101"><nd ref="101"/><nd ref="102"/><nd ref="103"/>
     <tag k="highway" v="residential"/><tag k="name" v="Hlavn&#225; &quot;star&#225;&quot;"/></way>
@@ -103,6 +107,8 @@ ROADS_OSM_XML = """<?xml version='1.0' encoding='UTF-8'?>
   <way id="161"><nd ref="161"/><nd ref="162"/><tag k="highway" v="path"/></way>
   <way id="171"><nd ref="171"/><nd ref="172"/><tag k="highway" v="track"/></way>
   <way id="181"><nd ref="181"/><nd ref="182"/><nd ref="183"/><nd ref="184"/><nd ref="181"/><tag k="highway" v="track"/></way>
+  <way id="191"><nd ref="191"/><nd ref="192"/><tag k="highway" v="path"/><tag k="sac_scale" v="alpine_hiking"/></way>
+  <way id="193"><nd ref="193"/><nd ref="194"/><tag k="highway" v="footway"/><tag k="indoor" v="yes"/></way>
   <relation id="900"><member type="way" ref="1" role="outer"/>
     <tag k="type" v="boundary"/><tag k="boundary" v="administrative"/><tag k="admin_level" v="4"/><tag k="name" v="Road kraj"/></relation>
 </osm>
@@ -114,7 +120,8 @@ ROADS_OSM_XML = """<?xml version='1.0' encoding='UTF-8'?>
 #   103 track, tracktype=grade2 -> 1 piece (667 m)
 #   161 path crossing the street without a shared node -> 1 piece (667 m)
 #   181 closed track ring -> 1 piece (about 1400 m)
-# Not roads: 111 motorway, 121 tunnel, 131 sidewalk, 141 driveway, 151 access=private; 171 is a track outside the
+# Not roads: 111 motorway, 121 tunnel, 131 sidewalk, 141 driveway, 151 access=private, 191 sac_scale=alpine_hiking,
+# 193 indoor=yes; 171 is a track outside the
 # relation (its midpoint lies outside, but inside the padded bounding box).
 
 
