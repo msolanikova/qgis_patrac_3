@@ -1,0 +1,305 @@
+# -*- coding: utf-8 -*-
+"""Road pieces from OSM lines: which ways count as roads or paths for the service bundle, and what they are called."""
+
+import logging
+import math
+
+import geopandas as gpd
+import numpy as np
+import pandas as pd
+import shapely
+from shapely.ops import substring
+
+from tools.sk_data import extract
+from tools.sk_data.crs import to_sjtsk
+from tools.sk_data.layers import _is_tunnel
+from tools.sk_data.pipeline import _region_boundary
+
+log = logging.getLogger("sk_data")
+
+INCLUDED_HIGHWAYS = frozenset({"track", "path", "bridleway", "service", "unclassified", "residential",
+                               "living_street", "tertiary", "cycleway", "footway"})
+WORSE_HIGHWAYS = frozenset({"track", "path", "bridleway"})
+UNPAVED_SURFACES = frozenset({"unpaved", "compacted", "fine_gravel", "gravel", "pebblestone", "dirt", "earth",
+                              "ground", "grass", "mud", "sand", "woodchips", "clay", "rock", "ice", "snow",
+                              "salt"})
+EXCLUDED_FOOTWAYS = frozenset({"sidewalk", "crossing", "traffic_island", "access_aisle"})
+EXCLUDED_SERVICES = frozenset({"parking_aisle", "driveway", "drive-through", "emergency_access"})
+EXCLUDED_ACCESS = frozenset({"no", "private"})
+ACCESS_FOOT_OVERRIDE = frozenset({"yes", "permissive", "designated"})   # foot=... that keeps a way with access=no/private
+# mountain-grade paths (SAC T3 and harder) are searched by the mountain service; mountain_hiking (T2) stays
+EXCLUDED_SAC_SCALES = frozenset({"demanding_mountain_hiking", "alpine_hiking", "demanding_alpine_hiking",
+                                 "difficult_alpine_hiking"})
+BUILT_UP_CLASS = 6   # the plugin class of the built-up sectors (rules/classes.json: AREZAS, ARUCZA, HRBITO, ...)
+EXCLUDE_IN_BUILT_UP = True   # False: road pieces in built-up sectors stay (the owner: no roads as gpx in built-up areas)
+# the sar-planner reader selects road tiles with a 5000 m margin (tiles_within(margin_m=5000) in bundle.py), which is
+# safe only while MAX_PIECE_M / 2 <= 5000 m
+MAX_PIECE_M = 5000.0
+MIN_PIECE_M = 30.0
+PIECE_COLUMNS = ["id", "name", "highway", "tracktype", "surface", "worse", "length_m", "geometry"]
+_ATTRIBUTES = ["name", "highway", "tracktype", "surface", "worse"]
+_VERTEX_DECIMALS = 3  # vertices closer than 1 mm are the same OSM node
+_MIDPOINT_DECIMALS = 2
+
+
+def classify(tags):
+    """None when the way is not a road piece, otherwise the 'worse' flag (True: track, path or unpaved surface)."""
+    highway = tags.get("highway")
+    if highway not in INCLUDED_HIGHWAYS:
+        return None
+    if (_is_tunnel(tags) or tags.get("indoor") == "yes" or tags.get("footway") in EXCLUDED_FOOTWAYS
+            or tags.get("service") in EXCLUDED_SERVICES or tags.get("sac_scale") in EXCLUDED_SAC_SCALES):
+        return None
+    if tags.get("access") in EXCLUDED_ACCESS and tags.get("foot") not in ACCESS_FOOT_OVERRIDE:
+        return None
+    surfaces = {part.strip() for part in (tags.get("surface") or "").split(";")}
+    return highway in WORSE_HIGHWAYS or bool(surfaces & UNPAVED_SURFACES)
+
+
+def display_name(tags):
+    """The name shown for a way: its name, else its ref, else None."""
+    return tags.get("name") or tags.get("ref") or None
+
+
+def _empty_pieces():
+    columns = {"id": pd.Series([], dtype=object), "name": pd.Series([], dtype=object),
+               "highway": pd.Series([], dtype=object), "tracktype": pd.Series([], dtype=object),
+               "surface": pd.Series([], dtype=object), "worse": pd.Series([], dtype=bool),
+               "length_m": pd.Series([], dtype=float)}
+    return gpd.GeoDataFrame(columns, geometry=gpd.GeoSeries([], crs=5514), crs=5514)
+
+
+def _orient(geoms):
+    """Lines reversed where needed so that the first vertex is not after the last in (x, y) order."""
+    first = shapely.get_coordinates(shapely.get_point(geoms, 0))
+    last = shapely.get_coordinates(shapely.get_point(geoms, -1))
+    flip = (first[:, 0] > last[:, 0]) | ((first[:, 0] == last[:, 0]) & (first[:, 1] > last[:, 1]))
+    geoms = geoms.copy()
+    geoms[flip] = shapely.reverse(geoms[flip])
+    return geoms
+
+
+def _components(n, pairs):
+    """Component label (0..n-1 space, not compact) of each of n items joined by the given index pairs."""
+    parent = list(range(n))
+
+    def find(i):
+        while parent[i] != i:
+            parent[i] = parent[parent[i]]
+            i = parent[i]
+        return i
+
+    for a, b in pairs.tolist():
+        ra, rb = find(a), find(b)
+        if ra != rb:
+            parent[max(ra, rb)] = min(ra, rb)
+    return np.array([find(i) for i in range(n)], dtype=np.int64)
+
+
+def _stretches(parts):
+    """Cut lines at their ends and at vertices shared with another line.
+    Returns (stretch geometries, index of the line of each stretch, start point id, end point id)."""
+    coords, line = shapely.get_coordinates(parts, return_index=True)
+    coords = np.round(coords, _VERTEX_DECIMALS)
+    repeated = np.zeros(len(coords), dtype=bool)
+    repeated[1:] = (line[1:] == line[:-1]) & (coords[1:] == coords[:-1]).all(axis=1)
+    coords, line = coords[~repeated], line[~repeated]
+    enough = np.bincount(line, minlength=len(parts))[line] >= 2
+    coords, line = coords[enough], line[enough]
+    if len(coords) == 0:
+        return None
+    point = pd.DataFrame(coords).groupby([0, 1], sort=False).ngroup().to_numpy()
+    distinct = pd.DataFrame({"point": point, "line": line}).drop_duplicates()
+    lines_at_point = np.bincount(distinct["point"].to_numpy(), minlength=point.max() + 1)
+    first = np.r_[True, line[1:] != line[:-1]]
+    last = np.r_[line[1:] != line[:-1], True]
+    cut = first | last | (lines_at_point[point] >= 2)
+    stretch_raw = np.cumsum(cut)
+    segment = np.flatnonzero(~last)  # segment i -> i + 1
+    starts = segment[cut[segment]]  # first vertex of each stretch, in stretch order
+    ends = np.flatnonzero(cut & ~first)  # last vertex of each stretch, in the same order
+    vertex = np.concatenate([starts, segment + 1])
+    owner = np.concatenate([stretch_raw[starts], stretch_raw[segment]])
+    order = np.lexsort((vertex, owner))
+    vertex, owner = vertex[order], owner[order]
+    _, compact = np.unique(owner, return_inverse=True)
+    geoms = shapely.linestrings(coords[vertex], indices=compact)
+    return geoms, line[starts], point[starts], point[ends]
+
+
+def _chains(stretches, key, start, end):
+    """Join stretches through points where exactly two stretches end and both have the same key.
+    Returns (chain geometries, index of a stretch the chain was made from)."""
+    n = len(stretches)
+    ends = pd.DataFrame({"point": np.concatenate([start, end]), "stretch": np.tile(np.arange(n), 2)})
+    degree = ends["point"].map(ends["point"].value_counts()).to_numpy()
+    pairs = ends[degree == 2].sort_values(["point", "stretch"], kind="stable")["stretch"].to_numpy().reshape(-1, 2)
+    pairs = pairs[(pairs[:, 0] != pairs[:, 1]) & (key[pairs[:, 0]] == key[pairs[:, 1]])]
+    if len(pairs) == 0:
+        return stretches, np.arange(n)
+    group = _components(n, pairs)
+    size = np.bincount(group, minlength=n)[group]
+    alone = np.flatnonzero(size == 1)
+    joined = np.flatnonzero(size > 1)
+    joined = joined[np.argsort(group[joined], kind="stable")]
+    labels, first_member, compact = np.unique(group[joined], return_index=True, return_inverse=True)
+    merged = shapely.line_merge(shapely.multilinestrings(stretches[joined], indices=compact))
+    merged_parts, merged_group = shapely.get_parts(merged, return_index=True)
+    geoms = np.concatenate([stretches[alone], merged_parts])
+    source = np.concatenate([alone, joined[first_member][merged_group]])
+    return geoms, source
+
+
+def _junction_points(stretches, start, end):
+    """Coordinates (as (x, y) tuples) of the points where three or more stretch ends meet."""
+    point = np.concatenate([start, end])
+    xy = np.concatenate([shapely.get_coordinates(shapely.get_point(stretches, 0)),
+                         shapely.get_coordinates(shapely.get_point(stretches, -1))])
+    degree = np.bincount(point)[point]
+    return set(map(tuple, xy[degree >= 3].tolist()))
+
+
+def _canonical_rings(geoms, junctions):
+    """Closed lines restarted at a canonical vertex and given a canonical direction, so that they do not depend
+    on where or in which direction the input ring started. The start is the smallest (x, y) junction point on
+    the ring, else its smallest (x, y) vertex; the direction goes first to the smaller of the start's two
+    neighbours."""
+    closed = np.flatnonzero(shapely.is_closed(geoms) & (shapely.get_num_points(geoms) >= 4))
+    if len(closed) == 0:
+        return geoms
+    geoms = geoms.copy()
+    for i in closed.tolist():
+        ring = [tuple(c) for c in shapely.get_coordinates(geoms[i])[:-1].tolist()]
+        at_junction = [c for c in ring if c in junctions]
+        first = min(at_junction) if at_junction else min(ring)
+        # a vertex the ring passes more than once: take the occurrence giving the smallest sequence
+        candidates = []
+        for k in (k for k, c in enumerate(ring) if c == first):
+            rotated = ring[k:] + ring[:k]
+            backwards = [rotated[0]] + rotated[:0:-1]
+            candidates.append(min(rotated, backwards, key=lambda r: r[1:]))
+        best = min(candidates, key=lambda r: r[1:])
+        geoms[i] = shapely.linestrings(best + [best[0]])
+    return geoms
+
+
+def _split_long(geoms, source):
+    """Chains longer than MAX_PIECE_M cut into ceil(length / MAX_PIECE_M) parts of equal length."""
+    lengths = shapely.length(geoms)
+    long = np.flatnonzero(lengths > MAX_PIECE_M)
+    if len(long) == 0:
+        return geoms, source
+    keep = np.ones(len(geoms), dtype=bool)
+    keep[long] = False
+    extra_geoms, extra_source = [], []
+    for i in long.tolist():
+        length = float(lengths[i])
+        count = math.ceil(length / MAX_PIECE_M)
+        step = length / count
+        for k in range(count):
+            extra_geoms.append(substring(geoms[i], k * step, length if k == count - 1 else (k + 1) * step))
+            extra_source.append(source[i])
+    return (np.concatenate([geoms[keep], np.array(extra_geoms, dtype=object)]),
+            np.concatenate([source[keep], np.array(extra_source, dtype=source.dtype)]))
+
+
+def _built_up_polygons(built_up):
+    """The polygons of built_up (None, a geometry, or an iterable of geometries) as an object array; empty when
+    there are none or when EXCLUDE_IN_BUILT_UP is off."""
+    if built_up is None or not EXCLUDE_IN_BUILT_UP:
+        return np.array([], dtype=object)
+    if isinstance(built_up, shapely.Geometry):
+        built_up = [built_up]
+    geoms = np.array([g for g in built_up if g is not None], dtype=object)
+    if len(geoms) == 0:
+        return geoms
+    parts = shapely.get_parts(geoms)
+    return parts[~shapely.is_empty(parts)]
+
+
+def _in_built_up(polygons, x, y):
+    """Boolean array: the point (x[i], y[i]) lies within one of the polygons. An STRtree finds the candidates, so the
+    10^4 to 10^5 sector polygons of a region are not unioned."""
+    if len(polygons) == 0 or len(x) == 0:
+        return np.zeros(len(x), dtype=bool)
+    hit = shapely.STRtree(polygons).query(shapely.points(x, y), predicate="within")
+    inside = np.zeros(len(x), dtype=bool)
+    inside[hit[0]] = True
+    return inside
+
+
+def _rank(values):
+    """Integer sort key of a column of strings and nulls: alphabetical, nulls last."""
+    codes = pd.Categorical(values).codes.astype(np.int64)
+    codes[codes < 0] = codes.max() + 1 if len(codes) else 0
+    return codes
+
+
+def road_pieces(lines, region, built_up=None):
+    """Road pieces (EPSG:5514) from OSM lines in EPSG:5514 with a 'tags' column; see the road piece rules.
+    Columns PIECE_COLUMNS, sorted by midpoint, ids r1, r2, ...
+
+    built_up (None, a shapely geometry or an iterable of geometries, EPSG:5514): the built-up sectors; a piece whose
+    midpoint lies within one of them is dropped, before the ids are given. Ignored when EXCLUDE_IN_BUILT_UP is False.
+    """
+    if len(lines) == 0:
+        return _empty_pieces()
+    tags = lines["tags"].tolist()
+    worse = [classify(t) for t in tags]
+    rows = [i for i, w in enumerate(worse) if w is not None]
+    if not rows:
+        return _empty_pieces()
+    attributes = pd.DataFrame({
+        "name": pd.Series([display_name(tags[i]) for i in rows], dtype=object),
+        "highway": pd.Series([tags[i]["highway"] for i in rows], dtype=object),
+        "tracktype": pd.Series([tags[i].get("tracktype") for i in rows], dtype=object),
+        "surface": pd.Series([tags[i].get("surface") for i in rows], dtype=object),
+        "worse": pd.Series([worse[i] for i in rows], dtype=bool),
+    })
+    key, _ = pd.factorize(pd.Series(list(attributes[_ATTRIBUTES].itertuples(index=False, name=None)),
+                                    dtype=object))
+    parts, part_row = shapely.get_parts(np.asarray(lines.geometry.values)[rows], return_index=True)
+    cut = _stretches(parts)
+    if cut is None:
+        return _empty_pieces()
+    stretches, stretch_part, start, end = cut
+    stretch_row = part_row[stretch_part]
+    chains, chain_stretch = _chains(stretches, key[stretch_row], start, end)
+    chains = _canonical_rings(_orient(chains), _junction_points(stretches, start, end))
+    pieces, piece_row = _split_long(chains, stretch_row[chain_stretch])
+    pieces = _orient(pieces)
+
+    length_m = np.array([round(float(v), 1) for v in shapely.length(pieces)])
+    mid = shapely.line_interpolate_point(pieces, 0.5, normalized=True)
+    mid_x, mid_y = np.round(shapely.get_x(mid), _MIDPOINT_DECIMALS), np.round(shapely.get_y(mid), _MIDPOINT_DECIMALS)
+    shapely.prepare(region)
+    keep = (length_m >= MIN_PIECE_M) & shapely.contains_xy(region, mid_x, mid_y)
+    polygons = _built_up_polygons(built_up)
+    if keep.any() and len(polygons):
+        candidates = np.flatnonzero(keep)
+        keep[candidates[_in_built_up(polygons, mid_x[candidates], mid_y[candidates])]] = False
+    if not keep.any():
+        return _empty_pieces()
+    pieces, piece_row, length_m, mid_x, mid_y = (a[keep] for a in (pieces, piece_row, length_m, mid_x, mid_y))
+    first = shapely.get_coordinates(shapely.get_point(pieces, 0))
+    attributes = attributes.iloc[piece_row].reset_index(drop=True)
+    # two pieces with the same geometry (OSM draws some ways twice) are ordered by their attributes, nulls last
+    ranks = [_rank(attributes[c]) for c in ("surface", "tracktype", "name", "highway")]
+    order = np.lexsort((*ranks, first[:, 1], first[:, 0], length_m, mid_y, mid_x))
+    out = attributes.iloc[order].reset_index(drop=True)
+    out.insert(0, "id", pd.Series(["r%d" % (i + 1) for i in range(len(order))], dtype=object))
+    out["length_m"] = length_m[order]
+    return gpd.GeoDataFrame(out, geometry=gpd.GeoSeries(pieces[order], crs=5514), crs=5514)[PIECE_COLUMNS]
+
+
+def region_roads(pbf, region_name, work_dir, built_up=None):
+    """Road pieces (see road_pieces; built_up is passed on) of the administrative area (level 4) named region_name in
+    the OSM file pbf.
+
+    work_dir must exist; the temporary GeoPackages of the boundary and of the lines are written there.
+    """
+    _, _, region, bbox = _region_boundary(pbf, region_name, work_dir)
+    lines = to_sjtsk(extract.read_lines(extract.extract_roads(pbf, bbox, work_dir)))
+    pieces = road_pieces(lines, region, built_up)
+    log.info("road pieces: %d from %d lines in %s", len(pieces), len(lines), region_name)
+    return pieces

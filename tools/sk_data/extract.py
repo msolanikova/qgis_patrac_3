@@ -78,6 +78,18 @@ def extract(pbf, bbox, out_dir):
     return paths
 
 
+def extract_roads(pbf, bbox, out_dir):
+    """Cut the lines inside bbox (lon/lat) whose highway value is one of roads.INCLUDED_HIGHWAYS out of the OSM file.
+
+    Returns the path of the GeoPackage (roads.gpkg in out_dir) with the 'lines' layer; read it with read_lines.
+    """
+    from tools.sk_data.roads import INCLUDED_HIGHWAYS   # roads imports this module
+    os.makedirs(out_dir, exist_ok=True)
+    log.info("extracting OSM roads")
+    where = "highway IN (%s)" % ", ".join("'%s'" % h for h in sorted(INCLUDED_HIGHWAYS))
+    return _translate(os.path.join(out_dir, "roads.gpkg"), pbf, "lines", spatFilter=tuple(bbox), where=where)
+
+
 def read_lines(path):
     """OSM lines as a GeoDataFrame with a 'tags' column (EPSG:4326)."""
     return with_tags(gpd.read_file(path))

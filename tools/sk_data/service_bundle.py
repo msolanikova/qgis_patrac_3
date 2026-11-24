@@ -9,28 +9,46 @@ coordinates are negative in Slovakia). A tile file is gzip, UTF-8, one JSON obje
 id, label, typ, cls (plugin class 1..10), area_ha, wkt (the polygon in EPSG:5514, 2 decimals) and
 outline (its exterior ring in WGS84, closed, 6 decimals). Only non-empty tiles are written. The manifest's
 coverage_wkt is the area the sectors cover (EPSG:5514, whole metres).
+
+A bundle built with roads also has
+
+    <out>/<region>/<version>/roads/<tx>_<ty>.jsonl.gz
+
+A road piece lives in the 10 km tile of the midpoint of its line (same tile numbers as the sectors). A road tile
+file is gzip, UTF-8, one JSON object per line with id ("r1", "r2", ...; unique in the bundle), name (or null),
+highway, tracktype (or null), surface (or null), worse (true or false), length_m (one decimal), wkt (the line in
+EPSG:5514, 2 decimals) and outline (the vertices of the line in WGS84, 6 decimals, at least 2 points). Only non-empty
+tiles are written. The manifest then has "roads": {"count": N, "tiles": {"<tx>_<ty>": n, ...}}; a bundle without
+roads has neither the key nor the folder. Roads ship in a new version, not into one that cases already use.
 """
 
 import gzip
 import json
+import logging
+import math
 import os
 import shutil
 import tempfile
 
 import geopandas as gpd
 import numpy as np
+import pandas as pd
 import shapely
 
-from tools.sk_data.config import region_dir
+from tools.sk_data import roads as road_rules
+from tools.sk_data.config import REGIONS, region_dir
 from tools.sk_data.crs import OPERATION_NAME, sjtsk_to_wgs84
 from tools.sk_data.export import zabaged_dir
-from tools.sk_data.pipeline import _replace
+from tools.sk_data.pipeline import _replace, default_osm_path
 from tools.sk_data.rules import load_rules
 
+log = logging.getLogger("sk_data")
 FORMAT = 1
 TILE_M = 10000
 CRS = "EPSG:5514"
 _POLYGON = 3   # shapely.get_type_id of a Polygon
+_LINESTRING = 1   # shapely.get_type_id of a LineString
+_ROAD_FIELDS = ["id", "name", "highway", "tracktype", "surface", "worse", "length_m"]
 
 
 def _check(sectors, classes):
@@ -113,23 +131,127 @@ def _write_tiles(folder, sectors, geoms, classes, groups):
                                    ensure_ascii=False) + "\n")
 
 
-def write_bundle(sectors, out_dir, region, version, classes, attribution, sources, overwrite=False):
+def _snap_lines(lines, ids):
+    """The lines on a 1 cm grid (set_precision, like the sector polygons), which is how the coordinates are written.
+
+    A line that snapping turns into something else than one LineString is rounded to 2 decimals instead; a line
+    that still has fewer than 2 distinct points raises ValueError naming the road.
+    """
+    snapped = shapely.set_precision(lines, 0.01)
+    for i in np.flatnonzero(shapely.get_type_id(snapped) != _LINESTRING):
+        rounded = np.round(shapely.get_coordinates(lines[i]), 2)
+        if len(np.unique(rounded, axis=0)) < 2:
+            raise ValueError("road %s has fewer than 2 distinct points at 2 decimals" % ids[i])
+        snapped[i] = shapely.linestrings(rounded)
+    for i in np.flatnonzero(shapely.is_empty(snapped) | (shapely.get_num_coordinates(snapped) < 2)):
+        raise ValueError("road %s has fewer than 2 distinct points at 2 decimals" % ids[i])
+    return snapped
+
+
+def _check_roads(roads):
+    """Return the lines of the road pieces, snapped to 2 decimals, after the checks; raise ValueError naming the road."""
+    if roads.crs is None or roads.crs.to_epsg() != 5514:
+        raise ValueError("the roads must be in EPSG:5514, got %s" % roads.crs)
+    missing = [c for c in _ROAD_FIELDS if c not in roads.columns]
+    if missing:
+        raise ValueError("the roads lack the column(s) %s" % ", ".join(missing))
+    ids = roads["id"].tolist()
+    seen = set()
+    for road_id in ids:
+        if not isinstance(road_id, str) or not road_id.startswith("r") or len(road_id) < 2:
+            raise ValueError("road id %r does not start with r followed by something" % (road_id,))
+        if road_id in seen:
+            raise ValueError("road id %s is not unique" % road_id)
+        seen.add(road_id)
+    lines = roads.geometry.to_numpy()
+    for i in np.flatnonzero((shapely.get_type_id(lines) != _LINESTRING) | shapely.is_empty(lines)):
+        raise ValueError("road %s is not a single non-empty LineString" % ids[i])
+    for road_id, worse, highway, length in zip(ids, roads["worse"].tolist(), roads["highway"].tolist(),
+                                               roads["length_m"].tolist()):
+        if not isinstance(worse, (bool, np.bool_)):
+            raise ValueError("road %s has worse=%r, which is not a boolean" % (road_id, worse))
+        if not isinstance(highway, str) or not highway:
+            raise ValueError("road %s has highway=%r, which is not a non-empty string" % (road_id, highway))
+        if (isinstance(length, (bool, np.bool_)) or not isinstance(length, (int, float, np.integer, np.floating))
+                or not math.isfinite(length) or length < 0):
+            raise ValueError("road %s has length_m=%r, which is not a finite number >= 0" % (road_id, length))
+    return _snap_lines(lines, ids)
+
+
+def _line_tile_groups(lines):
+    """{(tx, ty): [row, ...]} in input order, from the midpoints of the lines."""
+    mid = shapely.line_interpolate_point(lines, 0.5, normalized=True)
+    tx = np.floor(shapely.get_x(mid) / TILE_M).astype(int)
+    ty = np.floor(shapely.get_y(mid) / TILE_M).astype(int)
+    groups = {}
+    for row, key in enumerate(zip(tx.tolist(), ty.tolist())):
+        groups.setdefault(key, []).append(row)
+    return groups
+
+
+def _line_outlines(lines):
+    """The vertices of the lines in WGS84 (6 decimals) as lists of [lon, lat]; all vertices are transformed at once."""
+    coords, owner = shapely.get_coordinates(lines, return_index=True)
+    lon, lat = sjtsk_to_wgs84().transform(coords[:, 0], coords[:, 1])
+    points = np.round(np.column_stack([lon, lat]), 6)
+    edges = np.searchsorted(owner, np.arange(len(lines) + 1))
+    return [points[edges[i]:edges[i + 1]].tolist() for i in range(len(lines))]
+
+
+def _write_road_tiles(folder, roads, lines, groups):
+    outlines = _line_outlines(lines)
+    wkts = shapely.to_wkt(lines, rounding_precision=2)
+    ids, highways = (roads[c].tolist() for c in ("id", "highway"))
+    names, tracktypes, surfaces = ([None if pd.isna(v) else str(v) for v in roads[c].tolist()]
+                                   for c in ("name", "tracktype", "surface"))
+    worse = [bool(v) for v in roads["worse"].tolist()]
+    lengths = [round(float(v), 1) for v in roads["length_m"].tolist()]
+    for (tx, ty), rows in groups.items():
+        with gzip.open(os.path.join(folder, "%d_%d.jsonl.gz" % (tx, ty)), "wt", encoding="utf-8") as f:
+            for i in rows:
+                f.write(json.dumps({"id": ids[i], "name": names[i], "highway": highways[i], "tracktype": tracktypes[i],
+                                    "surface": surfaces[i], "worse": worse[i], "length_m": lengths[i], "wkt": wkts[i],
+                                    "outline": outlines[i]}, ensure_ascii=False, allow_nan=False) + "\n")
+
+
+def _version_dir(out_dir, region, version, overwrite):
+    """<out_dir>/<region>/<version> as an absolute path; FileExistsError when it exists and overwrite is false."""
+    version_dir = os.path.abspath(os.path.join(out_dir, region, version))
+    if os.path.lexists(version_dir) and not overwrite:
+        raise FileExistsError("%s already exists; pass --overwrite to replace it or choose another version" % version_dir)
+    return version_dir
+
+
+def write_bundle(sectors, out_dir, region, version, classes, attribution, sources, overwrite=False, roads=None,
+                 roads_info=None):
     """Write the bundle of a GeoDataFrame (EPSG:5514; fields id, label, typ) to <out_dir>/<region>/<version>/; return the manifest.
 
     typ is mapped to the plugin class with classes ({typ: 1..10}). The data is written to a sibling staging folder
     "<version>.partial-*" and moved into place after the manifest, the last file, is written; so the version
     folder is either complete or absent, and a failed run leaves an existing version untouched. An existing version
     raises FileExistsError unless overwrite is true. All checks run before anything is written.
+
+    roads is None (no roads in the bundle) or the GeoDataFrame of road pieces (EPSG:5514; fields id, name, highway,
+    tracktype, surface, worse, length_m; see roads.road_pieces), possibly empty. It adds the roads/ tiles and the
+    "roads" entry of the manifest; roads_info (a dict) is merged into that entry, and ignored without roads.
     """
-    version_dir = os.path.abspath(os.path.join(out_dir, region, version))
-    if os.path.lexists(version_dir) and not overwrite:
-        raise FileExistsError("%s already exists; pass --overwrite to replace it or choose another version" % version_dir)
+    version_dir = _version_dir(out_dir, region, version, overwrite)
     geoms = _check(sectors, classes)
     groups = _tile_groups(geoms)
+    if roads is not None:
+        road_lines = _check_roads(roads)
+        road_groups = _line_tile_groups(road_lines)
+        entry = {"count": len(roads), "tiles": {"%d_%d" % key: len(rows) for key, rows in sorted(road_groups.items())}}
+        for key, value in (roads_info or {}).items():
+            if key in entry:
+                raise ValueError("roads_info cannot replace %r" % key)
+            entry[key] = value
     manifest = {"format": FORMAT, "region": region, "version": version, "crs": CRS, "tile_m": TILE_M,
                 "sector_count": len(sectors), "tiles": {"%d_%d" % key: len(rows) for key, rows in sorted(groups.items())},
                 "transform": OPERATION_NAME, "sources": sources, "attribution": attribution,
                 "coverage_wkt": _coverage_wkt(geoms, groups)}
+    if roads is not None:
+        manifest["roads"] = entry
     parent = os.path.dirname(version_dir)
     os.makedirs(parent, exist_ok=True)
     staging = tempfile.mkdtemp(prefix=version + ".partial-", dir=parent)
@@ -139,6 +261,9 @@ def write_bundle(sectors, out_dir, region, version, classes, attribution, source
     try:
         os.mkdir(os.path.join(staging, "tiles"))
         _write_tiles(os.path.join(staging, "tiles"), sectors, geoms, classes, groups)
+        if roads is not None and road_groups:
+            os.mkdir(os.path.join(staging, "roads"))
+            _write_road_tiles(os.path.join(staging, "roads"), roads, road_lines, road_groups)
         with open(os.path.join(staging, "manifest.json"), "w", encoding="utf-8") as f:
             json.dump(manifest, f, indent=1, ensure_ascii=False)
         _replace(version_dir, staging)
@@ -153,12 +278,48 @@ def sources_from_metadata(metadata):
     return [{"name": name, "detail": info.get("url", "")} for name, info in (metadata.get("sources") or {}).items()]
 
 
-def bundle_region(root, region, version, out_dir, overwrite=False):
-    """Write the bundle of the built region <root>/kraje/<region> to <out_dir>/<region>/<version>/; return the manifest."""
+def bundle_region(root, region, version, out_dir, overwrite=False, roads=False, osm_pbf=None, region_name=None):
+    """Write the bundle of the built region <root>/kraje/<region> to <out_dir>/<region>/<version>/; return the manifest.
+
+    With roads=True the bundle also gets the road tiles, built from the OSM file osm_pbf (default: the downloaded
+    <root>/source/osm-slovakia file) for the administrative area named region_name (default: the name of the region
+    in config.REGIONS). They are cut in a temporary folder under <root>/work, which is removed afterwards. A
+    missing OSM file raises FileNotFoundError. The manifest's roads entry records the size of that file
+    (osm_bytes); a warning is logged when it differs from the size recorded for the sectors in metadata.json,
+    because then the roads and the sectors come from different OSM snapshots.
+
+    An existing version folder raises FileExistsError (unless overwrite) before anything is read. Road pieces whose
+    midpoint lies in a built-up sector (class roads.BUILT_UP_CLASS) are left out while roads.EXCLUDE_IN_BUILT_UP is on;
+    the roads entry of the manifest records built_up_class and built_up_excluded.
+    """
+    _version_dir(out_dir, region, version, overwrite)
     folder = region_dir(root, region)
+    if roads:
+        pbf = osm_pbf or default_osm_path(root)
+        if not os.path.isfile(pbf):
+            raise FileNotFoundError("the OSM file %s does not exist; run: python -m tools.sk_data download --region %s, "
+                                    "or point to the file with --osm" % (pbf, region))
     sectors = gpd.read_file(os.path.join(zabaged_dir(folder), "sectors.shp"))
     with open(os.path.join(folder, "metadata.json"), encoding="utf-8") as f:
-        sources = sources_from_metadata(json.load(f))
+        metadata = json.load(f)
     with open(os.path.join(folder, "ATTRIBUTION.txt"), encoding="utf-8") as f:
         attribution = f.read()
-    return write_bundle(sectors, out_dir, region, version, load_rules().classes, attribution, sources, overwrite=overwrite)
+    piece_frame = roads_info = None
+    if roads:
+        osm_bytes = os.path.getsize(pbf)
+        built_with = ((metadata.get("sources") or {}).get("osm") or {}).get("bytes")
+        if built_with is not None and built_with != osm_bytes:
+            log.warning("%s has %d bytes but the sectors were built from an OSM file of %s bytes; the roads come from "
+                        "another OSM snapshot than the sectors", pbf, osm_bytes, built_with)
+        classes = load_rules().classes
+        built_up = sectors.geometry[sectors["typ"].map(classes) == road_rules.BUILT_UP_CLASS].to_numpy()
+        os.makedirs(os.path.join(root, "work"), exist_ok=True)
+        work = tempfile.mkdtemp(prefix=region + "-roads-", dir=os.path.join(root, "work"))
+        try:
+            piece_frame = road_rules.region_roads(pbf, region_name or REGIONS[region], work, built_up)
+        finally:
+            shutil.rmtree(work, ignore_errors=True)
+        roads_info = {"osm_bytes": osm_bytes, "max_piece_m": road_rules.MAX_PIECE_M, "min_piece_m": road_rules.MIN_PIECE_M,
+                      "built_up_class": road_rules.BUILT_UP_CLASS, "built_up_excluded": road_rules.EXCLUDE_IN_BUILT_UP}
+    return write_bundle(sectors, out_dir, region, version, load_rules().classes, attribution,
+                        sources_from_metadata(metadata), overwrite=overwrite, roads=piece_frame, roads_info=roads_info)

@@ -58,8 +58,9 @@ folder for inspection (the path is printed); delete it when you no longer need i
 
 ## Service bundle for the SAR Planner
 
-`python -m tools.sk_data service-bundle --region ke --version 2026-11-22 [--out ROOT] [--overwrite]` cuts the
-sectors of a built region (`vektor/ZABAGED/sectors.shp`) into 10 km tiles for the SAR Planner. Default `ROOT` is
+`python -m tools.sk_data service-bundle --region ke --version 2026-11-22 [--out ROOT] [--osm PATH] [--no-roads] [--overwrite]`
+cuts the sectors of a built region (`vektor/ZABAGED/sectors.shp`) into 10 km tiles for the SAR Planner, and the roads
+and tracks of the region into road tiles (see below). Default `ROOT` is
 `<data>/service-bundles` (`~/patracdata/service-bundles`). The layout is `<ROOT>/<region>/<version>/manifest.json`
 and `tiles/<tx>_<ty>.jsonl.gz` (one JSON sector per line: id, label, typ, class, area_ha, polygon as WKT in
 EPSG:5514, outline in WGS84). A sector goes to the tile of its centroid, `floor(x / 10000)`. The WKT is snapped to
@@ -68,8 +69,66 @@ few sectors with a hairline neck that the 1 cm grid would split are snapped to 0
 The manifest is written last and carries the sources from `metadata.json`, the notice from `ATTRIBUTION.txt` and
 `coverage_wkt`: the area the region's data covers (union of all sectors, `buffer(100)`, `simplify(100)`, snapped to
 whole metres, EPSG:5514), so the SAR Planner can warn when a search area reaches beyond the data. An existing
-version is refused (exit code 2); `--overwrite` replaces it only after the new one is complete. The bundle is
+version is refused (exit code 2, before anything is read); `--overwrite` replaces it only after the new one is complete. The bundle is
 data: keep it out of git.
+
+### Road tiles
+
+By default the command also cuts the roads and tracks of the region into `roads/<tx>_<ty>.jsonl.gz` (the same 10 km
+tiles; a piece goes to the tile of the midpoint of its line) and adds `"roads": {"count", "tiles", "osm_bytes",
+"max_piece_m", "min_piece_m", "built_up_class", "built_up_excluded"}` to the manifest. `--no-roads` leaves them out: the bundle then has no `roads` folder and no
+`roads` key. The roads are read from the downloaded OSM file (`<data>/source/osm-slovakia/slovakia-latest.osm.pbf`;
+`--osm PATH` uses another file) and not from the built region, so they cost one more pass over that file (the lines
+inside the region's bounding box only, filtered by `highway`). A missing file is an error (exit code 2). The sectors come
+from the build of the region, the roads from the OSM file at the time of the command: when the file's size differs from
+the `sources.osm.bytes` in the region's `metadata.json`, the command logs a warning (the roads and the sectors are from
+different OSM snapshots) and the manifest's `osm_bytes` says which file the roads came from.
+
+A line of a road tile has `id` (`r1`, `r2`, ...; unique in the bundle; numbered by the midpoint of the piece, so the
+same data gives the same ids; two pieces with exactly the same geometry are ordered by `highway`, `name`, `tracktype`,
+`surface`, nulls last), `name` (the OSM `name`, else `ref`, else null), `highway`, `tracktype` and `surface` (as
+in OSM or null), `worse` (true or false), `length_m` (one decimal), `wkt` (the line in EPSG:5514, 2 decimals) and
+`outline` (its vertices in WGS84, 6 decimals). A piece is the stretch of a road between two junctions, where a
+junction is an OSM node shared by two ways (ways that cross without a shared node, a bridge for example, are neither cut
+nor joined there). Stretches that meet at a point where exactly two end are joined when `highway`, name, `tracktype`,
+`surface` and `worse` agree. A piece belongs to the region when its midpoint lies in the region's polygon; pieces are
+not clipped at the border. Pieces in built-up areas are left out (see the guesses below): the command takes the
+sectors of plugin class 6 (`roads.BUILT_UP_CLASS`; `AREZAS`, `ARUCZA`, `HRBITO`, `PRSTPR`, `ROZTRA`, `ROZZRI`,
+`ULOMIS`, `USNAOD`, `INTRAV` in `rules/classes.json`) from the region's `sectors.shp` and drops every piece, of any road
+type, whose midpoint lies within one of them; the manifest records `built_up_class` and `built_up_excluded`.
+
+**Road tiles ship only in a new version.** A case stores the bundle version it was planned on; if roads appeared in
+that version later, a re-plan of an older case would find road rows it never had and fail with a conflict. So build
+roads into a version name that no case uses yet (`--version 2026-12-01`), and do not use `--overwrite` on a version
+that cases were made on.
+
+**Guesses in the road rules** (each is one named constant in `tools/sk_data/roads.py`; the owner may change any):
+
+- Included `highway` values (`INCLUDED_HIGHWAYS`): track, path, bridleway, service, unclassified, residential,
+  living_street, tertiary, cycleway, footway. Motorways, trunk, primary and secondary roads (and their links) and steps
+  are left out.
+- Left out by tag even when the `highway` value is included: a tunnel (`layers.TUNNEL_VALUES`), `footway` sidewalk or
+  crossing, traffic_island or access_aisle (`footway=link` stays), `service` parking_aisle, driveway, drive-through or
+  emergency_access, `indoor=yes`, `access` no or private (unless `foot` is yes, permissive or designated:
+  `ACCESS_FOOT_OVERRIDE`).
+- Mountain-grade paths are left out (the owner: "those are searched by the mountain service, not by us"): any way whose
+  `sac_scale` is in `EXCLUDED_SAC_SCALES` (demanding_mountain_hiking, alpine_hiking, demanding_alpine_hiking,
+  difficult_alpine_hiking), whatever its `highway`. `mountain_hiking` (T2) and `hiking` stay.
+- No roads in built-up areas (the owner: "we don't need roads as gpx in built-up areas"): a piece whose midpoint lies
+  in a sector of class `BUILT_UP_CLASS = 6` is dropped, all road types. `EXCLUDE_IN_BUILT_UP = False` turns this off.
+  A piece that only touches a built-up sector with an end, or crosses one, stays: it is the midpoint that counts.
+- "Worse" (`worse: true`): the `highway` is track, path or bridleway (a track of any `tracktype`), or any `;`-separated
+  part of `surface` is in `UNPAVED_SURFACES` (unpaved, compacted, fine_gravel, gravel, pebblestone, dirt, earth,
+  ground, grass, mud, sand, woodchips, clay, rock, ice, snow, salt).
+- Lengths: `MAX_PIECE_M = 5000`, a longer chain is cut into equal parts of at most that length (a chain of exactly 5000 m
+  stays whole); `MIN_PIECE_M = 30`, shorter pieces (junction stubs, connectors) are dropped.
+
+Run it (after `build --region ke`, with a version name no case uses):
+
+```bash
+source tools/dev/qgis_env.sh
+"$QGIS_PY" -m tools.sk_data service-bundle --region ke --version 2026-12-01
+```
 
 ## Compare two builds in QGIS
 

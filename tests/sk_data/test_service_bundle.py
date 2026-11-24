@@ -1,17 +1,21 @@
 import gzip
 import json
 import os
+import shutil
 import tempfile
 import unittest
 from unittest import mock
 
 import geopandas as gpd
+import pandas as pd
 import shapely
-from shapely.geometry import MultiPolygon, Polygon, box
+from shapely.geometry import LineString, MultiLineString, MultiPolygon, Point, Polygon, box
 from shapely.wkt import loads as load_wkt
 
+from tests.sk_data.osm_fixture import write_roads_fixture
 from tools.sk_data import __main__ as cli
-from tools.sk_data import service_bundle
+from tools.sk_data import pipeline, roads, service_bundle
+from tools.sk_data.config import REGIONS
 from tools.sk_data.crs import OPERATION_NAME, sjtsk_to_wgs84, wgs84_to_sjtsk
 from tools.sk_data.export import write_region
 from tools.sk_data.rules import load_rules
@@ -33,8 +37,8 @@ def sectors_gdf():
         geometry=[square(KOSICE_X, KOSICE_Y), square(-262400.0, -1245000.0), ring_with_hole], crs=5514)
 
 
-def read_tile(version_dir, key):
-    with gzip.open(os.path.join(version_dir, "tiles", key + ".jsonl.gz"), "rt", encoding="utf-8") as f:
+def read_tile(version_dir, key, folder="tiles"):
+    with gzip.open(os.path.join(version_dir, folder, key + ".jsonl.gz"), "rt", encoding="utf-8") as f:
         return [json.loads(line) for line in f]
 
 
@@ -218,6 +222,171 @@ class WriteBundleTest(unittest.TestCase):
             self.write(gdf=sectors_gdf().set_crs(4326, allow_override=True))
 
 
+def roads_gdf():
+    """Three road pieces: r1 in tile (-27, -125); r2 and r3 in tile (-26, -125). r3 starts in tile -27 (x < -260000)
+    but its midpoint is in tile -26; r2 has no name, no tracktype and no surface; r3 has a quote and non-ASCII letters."""
+    return gpd.GeoDataFrame(
+        {"id": ["r1", "r2", "r3"],
+         "name": ["Hlavn\u00e1", None, 'Ulica "Q" \u013dudov\u00edta'],
+         "highway": ["residential", "track", "service"],
+         "tracktype": [None, None, "grade2"],
+         "surface": ["asphalt", None, "gravel"],
+         "worse": [False, True, True],
+         "length_m": [1500.04, 200.0, 3000.27]},
+        geometry=[LineString([(-262580.123, -1240038.456), (-262500.0, -1240100.0), (-262400.0, -1240200.5)]),
+                  LineString([(-255000.0, -1245000.0), (-254900.0, -1245000.0)]),
+                  LineString([(-261000.0, -1245000.0), (-258000.0, -1245000.0)])], crs=5514)
+
+
+class RoadTilesTest(unittest.TestCase):
+    def setUp(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.out = tmp.name
+        self.version_dir = os.path.join(self.out, "ke", "v1")
+
+    def write(self, roads, **kwargs):
+        return service_bundle.write_bundle(sectors_gdf(), self.out, "ke", "v1", CLASSES, "Attribution text", SOURCES,
+                                           roads=roads, **kwargs)
+
+    def test_without_roads_nothing_changes(self):
+        manifest = self.write(None)
+        self.assertEqual(set(manifest), {"format", "region", "version", "crs", "tile_m", "sector_count", "tiles",
+                                         "transform", "sources", "attribution", "coverage_wkt"})
+        self.assertEqual(sorted(os.listdir(self.version_dir)), ["manifest.json", "tiles"])
+
+    def test_road_tiles_and_manifest_entry(self):
+        manifest = self.write(roads_gdf())
+        self.assertEqual(sorted(os.listdir(os.path.join(self.out, "ke"))), ["v1"])   # no staging folder left over
+        self.assertEqual(sorted(os.listdir(self.version_dir)), ["manifest.json", "roads", "tiles"])
+        self.assertEqual(sorted(os.listdir(os.path.join(self.version_dir, "roads"))),
+                         ["-26_-125.jsonl.gz", "-27_-125.jsonl.gz"])
+        self.assertEqual(manifest["roads"], {"count": 3, "tiles": {"-27_-125": 1, "-26_-125": 2}})
+        for key, count in manifest["roads"]["tiles"].items():
+            self.assertEqual(len(read_tile(self.version_dir, key, "roads")), count)
+        self.assertEqual([r["id"] for r in read_tile(self.version_dir, "-26_-125", "roads")], ["r2", "r3"])
+        with open(os.path.join(self.version_dir, "manifest.json"), encoding="utf-8") as f:
+            self.assertEqual(json.load(f), manifest)
+
+    def test_a_road_line_has_the_contract_fields(self):
+        self.write(roads_gdf())
+        first = read_tile(self.version_dir, "-27_-125", "roads")[0]
+        self.assertEqual(list(first), ["id", "name", "highway", "tracktype", "surface", "worse", "length_m", "wkt", "outline"])
+        self.assertEqual((first["id"], first["name"], first["highway"], first["tracktype"], first["surface"]),
+                         ("r1", "Hlavn\u00e1", "residential", None, "asphalt"))
+        self.assertIs(first["worse"], False)
+        self.assertEqual(first["length_m"], 1500.0)
+        line = load_wkt(first["wkt"])
+        self.assertIsInstance(line, LineString)
+        self.assertEqual(list(line.coords), [(-262580.12, -1240038.46), (-262500.0, -1240100.0), (-262400.0, -1240200.5)])
+        for x, y in line.coords:
+            self.assertEqual((x, y), (round(x, 2), round(y, 2)))
+        outline = first["outline"]
+        self.assertEqual(len(outline), len(line.coords))
+        self.assertGreaterEqual(len(outline), 2)
+        for (lon, lat), (x, y) in zip(outline, line.coords):
+            exp_lon, exp_lat = sjtsk_to_wgs84().transform(x, y)
+            self.assertEqual((lon, lat), (round(exp_lon, 6), round(exp_lat, 6)))
+            self.assertTrue(48 < lat < 49 and 21 < lon < 22, (lon, lat))
+        r2, r3 = read_tile(self.version_dir, "-26_-125", "roads")
+        self.assertIs(r2["worse"], True)
+        self.assertEqual((r2["name"], r2["tracktype"], r2["surface"]), (None, None, None))
+        self.assertEqual((r3["name"], r3["tracktype"], r3["length_m"]), ('Ulica "Q" \u013dudov\u00edta', "grade2", 3000.3))
+        with gzip.open(os.path.join(self.version_dir, "roads", "-26_-125.jsonl.gz"), "rb") as f:
+            raw = f.read()
+        self.assertIn("\u013dudov\u00edta".encode("utf-8"), raw)   # not written as an \\u escape
+
+    def test_roads_do_not_touch_the_sector_tiles(self):
+        with_roads = self.write(roads_gdf())
+        tiles = {key: read_tile(self.version_dir, key) for key in with_roads["tiles"]}
+        without = service_bundle.write_bundle(sectors_gdf(), self.out, "ke", "v2", CLASSES, "Attribution text", SOURCES)
+        for key in without["tiles"]:
+            self.assertEqual(read_tile(os.path.join(self.out, "ke", "v2"), key), tiles[key])
+        for key in ("sector_count", "tiles", "coverage_wkt"):
+            self.assertEqual(with_roads[key], without[key])
+        self.assertEqual(sorted(os.listdir(os.path.join(self.version_dir, "tiles"))),
+                         sorted(os.listdir(os.path.join(self.out, "ke", "v2", "tiles"))))
+
+    def test_an_empty_roads_frame_gives_count_zero(self):
+        manifest = self.write(roads_gdf().iloc[:0])
+        self.assertEqual(manifest["roads"], {"count": 0, "tiles": {}})
+        self.assertEqual(sorted(os.listdir(self.version_dir)), ["manifest.json", "tiles"])
+        self.assertEqual(manifest["sector_count"], 3)
+        with open(os.path.join(self.version_dir, "manifest.json"), encoding="utf-8") as f:
+            self.assertEqual(json.load(f), manifest)
+
+    def test_roads_info_is_merged_into_the_entry(self):
+        manifest = self.write(roads_gdf(), roads_info={"osm_bytes": 5})
+        self.assertEqual(manifest["roads"], {"count": 3, "tiles": {"-27_-125": 1, "-26_-125": 2}, "osm_bytes": 5})
+        with open(os.path.join(self.version_dir, "manifest.json"), encoding="utf-8") as f:
+            self.assertEqual(json.load(f)["roads"]["osm_bytes"], 5)
+
+    def assert_refused(self, roads, pattern):
+        with self.assertRaisesRegex(ValueError, pattern):
+            self.write(roads)
+        self.assertFalse(os.path.exists(self.version_dir))
+        self.assertEqual(os.listdir(os.path.join(self.out, "ke")) if os.path.isdir(os.path.join(self.out, "ke")) else [], [])
+
+    def test_an_id_without_the_r_prefix_is_refused(self):
+        roads = roads_gdf()
+        roads.loc[1, "id"] = "x2"
+        self.assert_refused(roads, "x2")
+
+    def test_a_duplicate_id_is_refused(self):
+        roads = roads_gdf()
+        roads.loc[2, "id"] = "r1"
+        self.assert_refused(roads, "r1")
+
+    def test_a_geometry_that_is_not_a_single_line_is_refused(self):
+        for bad in (MultiLineString([[(0, 0), (1, 1)], [(5, 5), (6, 6)]]), Point(0, 0), LineString()):
+            roads = roads_gdf()
+            roads.loc[1, "geometry"] = bad
+            with self.subTest(bad=bad.wkt):
+                self.assert_refused(roads, "r2 ")
+
+    def test_a_frame_not_in_5514_is_refused(self):
+        self.assert_refused(roads_gdf().set_crs(4326, allow_override=True), "5514")
+
+    def test_a_line_that_collapses_at_two_decimals_is_refused(self):
+        roads = roads_gdf()
+        roads.loc[2, "geometry"] = LineString([(-258000.0, -1245000.0), (-258000.002, -1245000.003)])
+        self.assert_refused(roads, "r3 ")
+
+    def test_a_worse_that_is_not_boolean_is_refused(self):
+        for bad in ("yes", 1, None):
+            roads = roads_gdf().astype({"worse": object})
+            roads.loc[0, "worse"] = bad
+            with self.subTest(bad=bad):
+                self.assert_refused(roads, "r1 ")
+
+    def test_a_highway_that_is_not_a_non_empty_string_is_refused(self):
+        for bad in (None, float("nan"), "", 5):
+            roads = roads_gdf().astype({"highway": object})
+            roads.loc[1, "highway"] = bad
+            with self.subTest(bad=bad):
+                self.assert_refused(roads, "r2 ")
+
+    def test_a_length_that_is_not_a_finite_non_negative_number_is_refused(self):
+        for bad in (float("nan"), float("inf"), -1.0, None, "5", True):
+            roads = roads_gdf().astype({"length_m": object})
+            roads.loc[2, "length_m"] = bad
+            with self.subTest(bad=bad):
+                self.assert_refused(roads, "r3 ")
+
+    def test_a_failing_overwrite_with_roads_keeps_the_old_version(self):
+        self.write(roads_gdf())
+        with open(os.path.join(self.version_dir, "manifest.json"), encoding="utf-8") as f:
+            before = f.read()
+        bad = roads_gdf()
+        bad.loc[2, "id"] = "r1"
+        with self.assertRaises(ValueError):
+            self.write(bad, overwrite=True)
+        with open(os.path.join(self.version_dir, "manifest.json"), encoding="utf-8") as f:
+            self.assertEqual(f.read(), before)
+        self.assertEqual(len(read_tile(self.version_dir, "-26_-125", "roads")), 2)
+        self.assertEqual(sorted(os.listdir(os.path.join(self.out, "ke"))), ["v1"])
+
+
 class RegionAndCommandTest(unittest.TestCase):
     def setUp(self):
         tmp = tempfile.TemporaryDirectory()
@@ -241,15 +410,184 @@ class RegionAndCommandTest(unittest.TestCase):
         self.assertEqual(manifest["sector_count"], 3)
 
     def test_command_writes_to_service_bundles_by_default_and_refuses_an_existing_version(self):
-        self.assertEqual(self.run_cli("--version", "v1"), 0)
+        self.assertEqual(self.run_cli("--version", "v1", "--no-roads"), 0)
         self.assertTrue(os.path.isfile(os.path.join(self.root, "service-bundles", "ke", "v1", "manifest.json")))
-        self.assertEqual(self.run_cli("--version", "v1"), 2)
-        self.assertEqual(self.run_cli("--version", "v1", "--overwrite"), 0)
+        self.assertEqual(self.run_cli("--version", "v1", "--no-roads"), 2)
+        self.assertEqual(self.run_cli("--version", "v1", "--overwrite", "--no-roads"), 0)
 
     def test_command_out_option(self):
         out = os.path.join(self.root, "elsewhere")
-        self.assertEqual(self.run_cli("--version", "v9", "--out", out), 0)
+        self.assertEqual(self.run_cli("--version", "v9", "--out", out, "--no-roads"), 0)
         self.assertTrue(os.path.isfile(os.path.join(out, "ke", "v9", "manifest.json")))
+
+
+class RoadsOfRegionTest(unittest.TestCase):
+    def setUp(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.root = tmp.name
+        self.osm = write_roads_fixture(os.path.join(self.root, "roads.osm"))
+        self.osm_bytes = os.path.getsize(self.osm)
+        self.write_region(self.osm_bytes)
+        self.out = os.path.join(self.root, "out")
+
+    def write_region(self, osm_bytes, sectors=None):
+        meta = {"region": "ke", "sources": {"osm": {"url": "https://example.org/osm.pbf", "bytes": osm_bytes}}}
+        write_region(os.path.join(self.root, "kraje", "ke"), sectors_gdf() if sectors is None else sectors, {}, meta)
+
+    def built_up_sectors(self, typ="AREZAS"):
+        """The sectors of sectors_gdf plus a 300 m square of the given type around the midpoint (-266790, -1241666) of
+        the street piece "Hlavna" of the fixture (736 m; the only piece whose midpoint is there)."""
+        extra = gpd.GeoDataFrame({"id": ["4"], "label": ["Z1"], "typ": [typ]}, geometry=[square(-266790.0, -1241666.0, 300.0)],
+                                 crs=5514)
+        return gpd.GeoDataFrame(pd.concat([sectors_gdf(), extra], ignore_index=True), crs=5514)
+
+    def bundle(self, version="v1", **kwargs):
+        return service_bundle.bundle_region(self.root, "ke", version, self.out, roads=True, osm_pbf=self.osm,
+                                            region_name="Road kraj", **kwargs)
+
+    def run_cli(self, *args):
+        with mock.patch.object(cli, "data_root", return_value=self.root), \
+                mock.patch.dict(REGIONS, {"ke": "Road kraj"}), \
+                mock.patch("sys.stdout") as stdout, mock.patch("sys.stderr") as stderr:
+            code = cli.main(["service-bundle", "--region", "ke", *args])
+        return code, "".join(c.args[0] for c in stdout.write.call_args_list), "".join(c.args[0] for c in stderr.write.call_args_list)
+
+    def test_bundle_region_with_roads(self):
+        manifest = self.bundle()
+        version_dir = os.path.join(self.out, "ke", "v1")
+        entry = manifest["roads"]
+        self.assertEqual(entry["count"], 6)
+        self.assertEqual(entry["osm_bytes"], self.osm_bytes)
+        self.assertEqual((entry["max_piece_m"], entry["min_piece_m"]), (roads.MAX_PIECE_M, roads.MIN_PIECE_M))
+        self.assertEqual(sum(entry["tiles"].values()), 6)
+        lines = [line for key in entry["tiles"] for line in read_tile(version_dir, key, "roads")]
+        self.assertEqual(sorted(line["id"] for line in lines), sorted("r%d" % k for k in range(1, 7)))
+        self.assertIn('Hlavn\u00e1 "star\u00e1"', {line["name"] for line in lines})
+        for key, count in entry["tiles"].items():
+            self.assertEqual(len(read_tile(version_dir, key, "roads")), count)
+        self.assertEqual(manifest["sector_count"], 3)
+        self.assertEqual(manifest["tiles"], {"-27_-125": 2, "-26_-125": 1})
+
+    def lines_of(self, manifest, version="v1"):
+        return [line for key in manifest["roads"]["tiles"]
+                for line in read_tile(os.path.join(self.out, "ke", version), key, "roads")]
+
+    def test_roads_in_a_built_up_sector_are_left_out(self):
+        self.write_region(self.osm_bytes, self.built_up_sectors("AREZAS"))
+        manifest = self.bundle()
+        entry = manifest["roads"]
+        self.assertEqual((entry["count"], sum(entry["tiles"].values())), (5, 5))
+        self.assertEqual((entry["built_up_class"], entry["built_up_excluded"]), (6, True))
+        lines = self.lines_of(manifest)
+        self.assertEqual(sorted(line["id"] for line in lines), ["r%d" % k for k in range(1, 6)])
+        self.assertEqual(sorted(line["length_m"] // 100 for line in lines), [3.0, 3.0, 6.0, 6.0, 14.0])
+        self.assertNotIn(7.0, [line["length_m"] // 100 for line in lines])   # the 736 m street is gone
+        self.assertEqual(manifest["sector_count"], 4)
+
+    def test_every_class_6_type_counts_as_built_up_and_other_classes_do_not(self):
+        for typ, count in (("HRBITO", 5), ("INTRAV", 5), ("ZAHPAR", 6), ("LPSTROM", 6), ("OTHER", 6)):
+            with self.subTest(typ):
+                self.write_region(self.osm_bytes, self.built_up_sectors(typ))
+                self.assertEqual(self.bundle(version="v-" + typ, overwrite=True)["roads"]["count"], count)
+
+    def test_without_a_built_up_sector_all_roads_stay_and_the_info_says_so(self):
+        entry = self.bundle()["roads"]
+        self.assertEqual((entry["count"], entry["built_up_class"], entry["built_up_excluded"]), (6, 6, True))
+
+    def test_the_built_up_exclusion_can_be_switched_off(self):
+        self.write_region(self.osm_bytes, self.built_up_sectors())
+        with mock.patch.object(roads, "EXCLUDE_IN_BUILT_UP", False):
+            entry = self.bundle()["roads"]
+        self.assertEqual((entry["count"], entry["built_up_class"], entry["built_up_excluded"]), (6, 6, False))
+
+    def test_command_leaves_out_roads_in_built_up_sectors(self):
+        self.write_region(self.osm_bytes, self.built_up_sectors())
+        code, out, err = self.run_cli("--version", "v1", "--osm", self.osm)
+        self.assertEqual((code, err), (0, ""))
+        entry = self.read_manifest()["roads"]
+        self.assertEqual((entry["count"], entry["built_up_excluded"]), (5, True))
+        self.assertIn("5 road pieces", out)
+
+    def test_an_existing_version_is_refused_before_the_osm_file_or_sectors_are_read(self):
+        os.makedirs(os.path.join(self.out, "ke", "v1"))
+        missing = os.path.join(self.root, "nope.osm.pbf")
+        with mock.patch.object(service_bundle.gpd, "read_file", side_effect=AssertionError("sectors were read")):
+            with self.assertRaisesRegex(FileExistsError, "v1 already exists; pass --overwrite"):
+                service_bundle.bundle_region(self.root, "ke", "v1", self.out, roads=True, osm_pbf=missing,
+                                             region_name="Road kraj")
+            with self.assertRaisesRegex(FileExistsError, "v1 already exists"):
+                service_bundle.bundle_region(self.root, "ke", "v1", self.out)
+        self.assertEqual(os.listdir(os.path.join(self.out, "ke")), ["v1"])
+        self.assertFalse(os.path.exists(os.path.join(self.root, "work")))
+
+    def test_without_roads_there_is_no_roads_key(self):
+        manifest = service_bundle.bundle_region(self.root, "ke", "v2", self.out)
+        self.assertNotIn("roads", manifest)
+        self.assertEqual(sorted(os.listdir(os.path.join(self.out, "ke", "v2"))), ["manifest.json", "tiles"])
+
+    def test_the_sector_tiles_do_not_depend_on_the_roads(self):
+        with_roads = self.bundle(version="v1")
+        without = service_bundle.bundle_region(self.root, "ke", "v2", self.out)
+        self.assertEqual(with_roads["tiles"], without["tiles"])
+        for key in without["tiles"]:
+            self.assertEqual(read_tile(os.path.join(self.out, "ke", "v1"), key),
+                             read_tile(os.path.join(self.out, "ke", "v2"), key))
+
+    def test_the_work_folder_is_removed(self):
+        self.bundle()
+        self.assertEqual(os.listdir(os.path.join(self.root, "work")), [])
+
+    def test_a_missing_pbf_raises_and_writes_nothing(self):
+        missing = os.path.join(self.root, "nope.osm.pbf")
+        with self.assertRaisesRegex(FileNotFoundError, "nope.osm.pbf"):
+            service_bundle.bundle_region(self.root, "ke", "v1", self.out, roads=True, osm_pbf=missing,
+                                         region_name="Road kraj")
+        self.assertFalse(os.path.exists(os.path.join(self.out, "ke")))
+
+    def test_a_different_osm_size_logs_a_warning(self):
+        self.write_region(self.osm_bytes + 1)
+        with self.assertLogs("sk_data", "WARNING") as logged:
+            manifest = self.bundle()
+        self.assertEqual(len(logged.records), 1)
+        self.assertIn(str(self.osm_bytes + 1), logged.output[0])
+        self.assertEqual(manifest["roads"]["osm_bytes"], self.osm_bytes)
+
+    def test_the_same_osm_size_logs_no_warning(self):
+        with self.assertNoLogs("sk_data", "WARNING"):
+            self.bundle()
+
+    def read_manifest(self):
+        with open(os.path.join(self.root, "service-bundles", "ke", "v1", "manifest.json"), encoding="utf-8") as f:
+            return json.load(f)
+
+    def test_command_writes_roads_by_default_from_the_default_osm_path(self):
+        default = pipeline.default_osm_path(self.root)
+        os.makedirs(os.path.dirname(default))
+        shutil.copy(self.osm, default)
+        code, out, err = self.run_cli("--version", "v1")
+        self.assertEqual((code, err), (0, ""))
+        self.assertEqual(self.read_manifest()["roads"]["count"], 6)
+        self.assertIn("6 road pieces", out)
+        self.assertIn("tiles", out)
+
+    def test_command_osm_option(self):
+        code, out, err = self.run_cli("--version", "v1", "--osm", self.osm)
+        self.assertEqual((code, err), (0, ""))
+        self.assertEqual(self.read_manifest()["roads"]["osm_bytes"], self.osm_bytes)
+
+    def test_command_no_roads(self):
+        code, out, err = self.run_cli("--version", "v1", "--no-roads")
+        self.assertEqual((code, err), (0, ""))
+        self.assertNotIn("roads", self.read_manifest())
+        self.assertNotIn("road", out)
+
+    def test_command_missing_osm_returns_2(self):
+        code, out, err = self.run_cli("--version", "v1")
+        self.assertEqual(code, 2)
+        self.assertIn("error:", err)
+        self.assertIn("slovakia-latest.osm.pbf", err)
+        self.assertFalse(os.path.exists(os.path.join(self.root, "service-bundles", "ke")))
 
 
 if __name__ == "__main__":
